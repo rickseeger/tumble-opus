@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 
@@ -55,7 +56,23 @@ def main(argv=None) -> int:
         print("[tumble] shutdown clean")
         return 0
 
-    app = TumbleApp(headless=False)
+    try:
+        app = TumbleApp(headless=False)
+    except Exception as exc:
+        if "Could not open window" in str(exc):
+            print(
+                "\n[tumble] Could not open a window.\n"
+                "         This machine has no usable display "
+                f"(DISPLAY={os.environ.get('DISPLAY', 'unset')!r}).\n"
+                "         If you are on a desktop, check your graphics drivers.\n"
+                "         If you are over SSH or on a server, run the sim "
+                "without a window instead:\n"
+                "             ./run.sh --headless\n",
+                file=sys.stderr,
+            )
+            return 2
+        raise
+
     print("[tumble] window up - WASD to move, mouse to look, shift to sprint, esc to quit")
     print("[tumble] entering main loop")
     app.run()

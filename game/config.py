@@ -54,12 +54,27 @@ sync-video #t
 """
 
 
-def display_prc(headless: bool) -> str:
+#: Renders into an offscreen buffer: a real graphics pipe and camera, but no
+#: visible window. Lets the tests exercise the *render* path (and sample the
+#: resulting pixels) on a display-less server.
+PRC_OFFSCREEN = """
+window-type offscreen
+audio-library-name null
+win-size 320 240
+notify-level-display error
+"""
+
+
+def display_prc(headless: bool, offscreen: bool = False) -> str:
     """Return the PRC fragment appropriate for the requested mode."""
-    return PRC_HEADLESS if headless else PRC_WINDOWED
+    if headless:
+        return PRC_HEADLESS
+    if offscreen:
+        return PRC_OFFSCREEN
+    return PRC_WINDOWED
 
 
-def bootstrap_display(headless: bool) -> str:
+def bootstrap_display(headless: bool, offscreen: bool = False) -> str:
     """Load display config into Panda.
 
     Must be called *before* a ShowBase is constructed. Returns the PRC text
@@ -67,6 +82,6 @@ def bootstrap_display(headless: bool) -> str:
     """
     from panda3d.core import loadPrcFileData
 
-    prc = display_prc(headless)
+    prc = display_prc(headless, offscreen)
     loadPrcFileData("tumble-display", prc)
     return prc

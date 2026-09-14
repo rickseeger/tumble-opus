@@ -37,12 +37,15 @@ KEY_BINDINGS = {
 
 
 class TumbleApp(ShowBase):
-    def __init__(self, headless: bool = False) -> None:
-        config.bootstrap_display(headless)
+    def __init__(self, headless: bool = False, offscreen: bool = False) -> None:
+        """headless: no graphics pipe at all. offscreen: render to a buffer
+        with no visible window (used by tests to exercise the render path)."""
+        config.bootstrap_display(headless, offscreen)
         super().__init__()
 
-        #: True only when a real window/graphics pipe came up.
+        #: True only when no window/graphics pipe came up.
         self.headless = headless or self.win is None
+        self.offscreen = offscreen
 
         # ---- sim (identical in both modes) --------------------------------
         self.physics = PhysicsWorld()
@@ -108,10 +111,12 @@ class TumbleApp(ShowBase):
         self.camLens.setFar(600.0)
         self.player.attach_camera(self.camera)
 
-        props = WindowProperties()
-        props.setCursorHidden(True)
-        props.setMouseMode(WindowProperties.M_relative)
-        self.win.requestProperties(props)
+        # Offscreen buffers have no cursor or pointer to capture.
+        if not self.offscreen and hasattr(self.win, "requestProperties"):
+            props = WindowProperties()
+            props.setCursorHidden(True)
+            props.setMouseMode(WindowProperties.M_relative)
+            self.win.requestProperties(props)
 
     def _bind_keys(self) -> None:
         for key, field in KEY_BINDINGS.items():
@@ -124,7 +129,9 @@ class TumbleApp(ShowBase):
     # ---------------------------------------------------------------- input
     def _poll_mouse(self) -> None:
         """Relative mouse mode: read the delta, then recentre the pointer."""
-        if self.headless or not self.mouseWatcherNode.hasMouse():
+        if self.headless or self.offscreen:
+            return
+        if not self.mouseWatcherNode.hasMouse():
             return
         md = self.win.getPointer(0)
         cx = self.win.getXSize() // 2
