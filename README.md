@@ -64,7 +64,9 @@ game/config.py     tunables; PRC display config for windowed vs headless
 game/physics.py    Bullet world, fixed timestep, body authoring  (no render deps)
 game/player.py     FPS capsule character + InputState             (no render deps)
 game/world.py      course authoring: ground plane + box towers    (no render deps)
+game/fracture.py   fracture generation library: spec -> convex chunks (pure data)
 game/app.py        ShowBase host: visuals, lights, camera, input binding
+tools_fracture_report.py  headless per-archetype fracture summary table
 tests/             pytest suite, runs with no display
 ```
 
@@ -93,6 +95,71 @@ capsule. Vertical motion comes only from Bullet, so the player is subject to
 gravity and cannot tunnel through the ground or a static structure. Input is
 funnelled through a plain `InputState` dataclass, which is what lets tests
 drive the character with no keyboard and no window.
+
+## Fracture library
+
+`game/fracture.py` is a standalone, engine-free module: it imports nothing from
+Panda3D or Bullet, so it can be tested and profiled headlessly and reused by
+the runtime destruction layer. It takes a `StructureSpec` (one or more
+axis-aligned `Block`s) plus an integer seed and pre-generates, at load time, the
+full list of convex `Chunk` descriptors that tile that structure's volume.
+
+```python
+from game import fracture
+
+result = fracture.fracture(fracture.tower_spec(), seed=7)
+for chunk in result.chunks:
+    chunk.center          # centroid in structure-local space
+    chunk.vertices        # convex hull vertices, relative to the centroid
+    chunk.edges           # explicit edge list - the glowing wireframe draws these
+    chunk.faces           # vertex-index polygons, outward wound
+    chunk.volume, chunk.mass, chunk.half_extents
+    chunk.launch_dir      # unit outward hint from the structure's fracture origin
+```
+
+Four archetypes ship by default — `tower_spec`, `slab_spec`, `arch_spec`,
+`cluster_spec` — but the spec dataclass is general, so new structures are just
+data.
+
+**How it fractures.** Each block is carved by recursive half-space splitting
+with jittered, *oblique* planes. Cut placement is deliberately biased: a
+sizeable minority of cuts run across a piece's shortest axis (which yields long
+slabs and shards rather than cubes) and land well off-centre (which spreads the
+size distribution), and the next piece to split is chosen with probability
+proportional to its volume rather than always being the largest — so a few big
+slabs survive alongside a swarm of small debris. Because every cut is a plane
+through a convex solid, the result is exactly space-filling: chunks do not
+overlap and volume is conserved to floating-point round-off, not to a
+hand-waved tolerance.
+
+Measured output at the shipped budgets (seed 20260914, `tools_fracture_report.py`):
+
+| structure | chunks | source vol | chunk vol | vol err | min/med/max chunk vol | max:min | median aspect | gen |
+|---|---|---|---|---|---|---|---|---|
+| tall_tower | 380 | 3840.0 | 3840.0 | 1.2e-16 | 0.36 / 7.00 / 72.66 | 204:1 | 3.28 | 69 ms |
+| wide_slab | 320 | 7128.0 | 7128.0 | 0.0 | 0.93 / 16.02 / 126.06 | 136:1 | 2.74 | 53 ms |
+| arch | 260 | 1830.0 | 1830.0 | 2.5e-16 | 0.27 / 5.44 / 55.98 | 209:1 | 2.56 | 47 ms |
+| block_cluster | 240 | 1179.0 | 1179.0 | 1.9e-16 | 0.17 / 3.93 / 45.18 | 273:1 | 2.63 | 40 ms |
+
+All four together pre-generate in about 210 ms — comfortably a load-time cost,
+never a shatter-time one. `max_chunks` is a hard ceiling that is never exceeded,
+and `fracture()` refuses a budget smaller than the block count rather than
+silently dropping geometry.
+
+Print the table yourself:
+
+```
+.venv/bin/python tools_fracture_report.py --seed 7
+```
+
+`tests/test_fracture.py` asserts determinism (byte-identical output for the
+same spec+seed, stable across `PYTHONHASHSEED`, and genuinely different chunk
+centres across seeds), volume conservation, containment inside both the
+structure bounds and the source block (so the arch's opening stays open),
+zero sampled interior overlap, full interior coverage, closed-manifold geometry
+(V - E + F = 2 on every chunk), size spread of at least one order of magnitude
+with all three log-size bands populated, aspect-ratio spread, budget bounds,
+and per-structure generation time.
 
 ## Tests
 
