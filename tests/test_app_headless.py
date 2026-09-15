@@ -26,10 +26,19 @@ def test_course_is_populated_on_boot(app):
     names = app.physics.bodies
     assert "ground" in names
     assert "player" not in names          # the character is not a rigid body
-    # Tower blocks + 2 boundary walls.
-    assert len(app.physics.box_specs) == block_count() + 2
+
+    # Tower blocks + 2 boundary walls + one static collision proxy per source
+    # block of every destructible. An intact destructible is a few static
+    # boxes, not its 240-380 chunks: the chunks only become bodies when it is
+    # demolished (see game/structures.py).
+    proxies = sum(len(d.spec.blocks) for d in app.destructibles)
+    assert proxies > 0, "no destructibles were placed on the course"
+    assert len(app.physics.box_specs) == block_count() + 2 + proxies
     assert all(s.static for s in app.physics.box_specs), "course must be static"
     assert any(n.startswith("tower_c") for n in names)
+    for d in app.destructibles:
+        for name in d.proxy_names:
+            assert name in names, f"destructible proxy {name} is missing"
 
 
 def test_step_frame_runs_fixed_steps_and_moves_the_player(app):
