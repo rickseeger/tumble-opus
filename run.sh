@@ -35,7 +35,11 @@ fi
 
 if [ "${1:-}" = "--test" ]; then
   shift
-  exec "$PY" -m pytest -q "$@"
+  # NOTE: pytest.ini already sets -q. Passing -q again here makes pytest
+  # doubly-quiet, which suppresses the "N passed" summary line entirely and
+  # leaves anyone validating this project with no pass/fail count at all.
+  # Report verbosely instead: the summary line is the whole point.
+  exec "$PY" -m pytest -r a "$@"
 fi
 
 exec "$PY" main.py "$@"

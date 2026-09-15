@@ -29,6 +29,7 @@ def main() -> int:
     specs = F.default_specs()
     rows = []
     for spec in specs:
+        spec.validate()          # no interpenetrating source blocks
         r = F.fracture(spec, args.seed)
         vols = r.volumes()
         ars = sorted(c.aspect_ratio for c in r.chunks)
@@ -83,6 +84,11 @@ def main() -> int:
     total_ms = sum(r["gen_ms"] for r in rows)
     print(f"\nall {len(rows)} structures pre-generated in {total_ms:.1f} ms "
           f"({sum(r['chunks'] for r in rows)} chunks total)")
+
+    bad = [(s.name, s.overlapping_block_pairs()) for s in specs]
+    bad = [(n, b) for n, b in bad if b]
+    print("source-block interpenetration: "
+          + ("NONE (volume is not double counted)" if not bad else repr(bad)))
 
     print("\nseed sensitivity (chunk count / max-volume chunk, arch spec):")
     arch = F.arch_spec()

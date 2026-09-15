@@ -467,3 +467,222 @@ def test_a_hand_written_spec_works():
     assert 0 < len(r) <= 64
     assert r.volume_error <= VOLUME_TOLERANCE
     assert r.volumes()[-1] / r.volumes()[0] >= 10.0
+
+
+# ===================================================================
+# Regression + contract-hardening tests added during independent
+# re-validation of node 9. Every one of these was written because the
+# original suite passed while the guarantee underneath it did not hold.
+# ===================================================================
+
+#: Exact pairwise chunk overlap allowed. Half-space splitting is exact, so the
+#: only correct answer is "none": touching faces are not overlap (see
+#: convex_pair_overlap's eps handling).
+EXACT_OVERLAP_PAIRS_ALLOWED = 0
+
+
+def test_source_blocks_never_interpenetrate(specs):
+    """REGRESSION: cluster blocks c0/c5 and c1/c5 used to overlap by 6.5 m^3.
+
+    Interpenetrating source blocks are a double fault: the shared volume is
+    counted twice in ``spec.volume`` (so "volume conservation" conserves the
+    wrong number), and the chunks carved from those blocks genuinely occupy the
+    same space. Monte-Carlo sampling over a sparse bounding box missed it.
+    """
+    for spec in specs:
+        bad = spec.overlapping_block_pairs()
+        assert bad == [], (
+            f"{spec.name}: source blocks interpenetrate: "
+            + ", ".join(f"{a}<->{b} ({v:.4f} m^3)" for a, b, v in bad)
+        )
+
+
+def test_structure_volume_is_not_double_counted(specs):
+    """spec.volume must equal the true occupied volume, not the sum of
+    possibly-overlapping block volumes."""
+    for spec in specs:
+        double_counted = sum(v for _, _, v in spec.overlapping_block_pairs())
+        assert double_counted == 0.0, (
+            f"{spec.name}: {double_counted:.4f} m^3 of structure volume is "
+            "counted twice"
+        )
+
+
+def test_validate_rejects_interpenetrating_blocks():
+    """The validator must actually fire - a guard that never triggers is not a
+    guard. This rebuilds the exact bug that shipped."""
+    bad = StructureSpec(
+        name="interpenetrating",
+        kind="cluster",
+        blocks=(
+            Block("a", (0.0, 0.0, 2.0), (3.0, 3.0, 2.0)),
+            Block("b", (2.0, 0.0, 2.0), (3.0, 3.0, 2.0)),  # overlaps a
+        ),
+        max_chunks=32,
+    )
+    assert bad.overlapping_block_pairs(), "test fixture does not actually overlap"
+    with pytest.raises(ValueError, match="interpenetrat"):
+        F.fracture(bad, SEED)
+
+
+def test_touching_blocks_are_allowed():
+    """Face-to-face contact is legal; only shared *volume* is a fault."""
+    ok = StructureSpec(
+        name="touching",
+        kind="cluster",
+        blocks=(
+            Block("a", (0.0, 0.0, 2.0), (2.0, 2.0, 2.0)),
+            Block("b", (4.0, 0.0, 2.0), (2.0, 2.0, 2.0)),  # touches at x=2
+        ),
+        max_chunks=32,
+    )
+    assert ok.overlapping_block_pairs() == []
+    r = F.fracture(ok, SEED)
+    assert len(r) > 0
+    assert r.volume_error <= VOLUME_TOLERANCE
+
+
+def test_chunks_are_provably_disjoint_by_separating_axis(specs):
+    """Exact geometric non-overlap, not Monte-Carlo.
+
+    Sampling can miss a thin interpenetration; a separating-axis test cannot.
+    Checked against every chunk pair whose bounding spheres could touch.
+    """
+    for spec in specs:
+        r = F.fracture(spec, SEED)
+        chunks = r.chunks
+        radius = [max(F._length(v) for v in c.vertices) for c in chunks]
+        overlaps = []
+        for i in range(len(chunks)):
+            for j in range(i + 1, len(chunks)):
+                d = F._length(F._sub(chunks[i].center, chunks[j].center))
+                if d >= radius[i] + radius[j]:
+                    continue  # bounding spheres disjoint - cannot overlap
+                if F.convex_pair_overlap(chunks[i], chunks[j]):
+                    overlaps.append((chunks[i].index, chunks[j].index))
+        assert len(overlaps) <= EXACT_OVERLAP_PAIRS_ALLOWED, (
+            f"{spec.name}: {len(overlaps)} chunk pairs interpenetrate, "
+            f"e.g. {overlaps[:5]}"
+        )
+
+
+def test_separating_axis_check_detects_a_real_overlap():
+    """Guard the guard: convex_pair_overlap must return True for solids that
+    genuinely intersect, or the test above proves nothing."""
+    a = F._emit_chunk(0, "a", F.box_faces((0.0, 0.0, 0.0), (1.0, 1.0, 1.0)),
+                      F.tower_spec(), (0.0, 0.0, 0.0))
+    hit = F._emit_chunk(1, "b", F.box_faces((0.5, 0.0, 0.0), (1.0, 1.0, 1.0)),
+                        F.tower_spec(), (0.0, 0.0, 0.0))
+    miss = F._emit_chunk(2, "c", F.box_faces((5.0, 0.0, 0.0), (1.0, 1.0, 1.0)),
+                         F.tower_spec(), (0.0, 0.0, 0.0))
+    touch = F._emit_chunk(3, "d", F.box_faces((2.0, 0.0, 0.0), (1.0, 1.0, 1.0)),
+                          F.tower_spec(), (0.0, 0.0, 0.0))
+    assert F.convex_pair_overlap(a, hit) is True, "failed to detect real overlap"
+    assert F.convex_pair_overlap(a, miss) is False, "false positive on disjoint"
+    assert F.convex_pair_overlap(a, touch) is False, "touching counted as overlap"
+
+
+def test_overlap_sampling_actually_exercises_the_solid(specs):
+    """The old non-overlap test sampled a sparse bounding box and only landed
+    ~230 points inside the cluster. Sample inside the blocks instead."""
+    rng = random.Random(777)
+    for spec in specs:
+        r = F.fracture(spec, SEED)
+        overlaps = interior = 0
+        for block in spec.blocks:
+            blo, bhi = block.bounds
+            for _ in range(250):
+                p = tuple(rng.uniform(blo[i], bhi[i]) for i in range(3))
+                owners = sum(1 for c in r.chunks
+                             if c.contains_point(p, eps=-OVERLAP_SURFACE_EPS))
+                if owners:
+                    interior += 1
+                if owners > 1:
+                    overlaps += 1
+        assert interior >= 200 * len(spec.blocks), (
+            f"{spec.name}: only {interior} points landed in a chunk"
+        )
+        assert overlaps == 0, (
+            f"{spec.name}: {overlaps}/{interior} interior points in 2+ chunks"
+        )
+
+
+def test_module_runs_with_engine_imports_unavailable():
+    """CONTRACT CLAUSE 7, properly proven.
+
+    The existing test only greps the AST for banned names. This runs the real
+    generator in a subprocess where importing panda3d / direct / numpy raises,
+    so the module is proven to import AND run with no engine present.
+    """
+    import subprocess
+    import sys
+
+    code = (
+        "import sys\n"
+        "class Blocker:\n"
+        "    BANNED = ('panda3d', 'direct', 'numpy')\n"
+        "    def find_module(self, name, path=None):\n"
+        "        return self.find_spec(name, path)\n"
+        "    def find_spec(self, name, path=None, target=None):\n"
+        "        if name.split('.')[0] in self.BANNED:\n"
+        "            raise ImportError('blocked engine dependency: ' + name)\n"
+        "        return None\n"
+        "sys.meta_path.insert(0, Blocker())\n"
+        "from game import fracture as F\n"
+        "r = F.fracture(F.tower_spec(), 7)\n"
+        "assert len(r) > 0 and r.volume_error < 1e-6\n"
+        "leaked = [m for m in sys.modules "
+        "          if m.split('.')[0] in ('panda3d', 'direct', 'numpy')]\n"
+        "assert not leaked, leaked\n"
+        "print('PURE', len(r))\n"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code], cwd=ROOT,
+        capture_output=True, text=True,
+    )
+    assert out.returncode == 0, (
+        f"fracture failed without engine libs:\n{out.stdout}\n{out.stderr}"
+    )
+    assert out.stdout.startswith("PURE"), out.stdout
+
+
+def test_generation_scales_to_a_whole_level_under_budget():
+    """CONTRACT CLAUSE 6: declared wall-clock bound on the largest archetype."""
+    biggest = max(F.default_specs(), key=lambda s: s.max_chunks)
+    t0 = time.perf_counter()
+    r = F.fracture(biggest, SEED)
+    elapsed = time.perf_counter() - t0
+    assert elapsed < GEN_TIME_BOUND_S, (
+        f"largest archetype {biggest.name} took {elapsed:.3f}s "
+        f"(bound {GEN_TIME_BOUND_S}s)"
+    )
+    assert len(r) == biggest.max_chunks
+
+
+def test_variety_holds_across_many_seeds_not_just_one(specs):
+    """Guards against assertions tuned to a single lucky seed."""
+    for spec in specs:
+        for seed in range(6):
+            r = F.fracture(spec, seed)
+            vols = r.volumes()
+            ars = sorted(c.aspect_ratio for c in r.chunks)
+            assert vols[-1] / vols[0] >= 10.0, (
+                f"{spec.name} seed {seed}: volume span only "
+                f"{vols[-1] / vols[0]:.1f}x"
+            )
+            assert statistics.median(ars) >= 1.8, (
+                f"{spec.name} seed {seed}: median aspect {statistics.median(ars):.2f}"
+            )
+            assert ars[-1] >= 6.0, f"{spec.name} seed {seed}: no shards"
+            assert r.volume_error <= VOLUME_TOLERANCE
+
+
+def test_budget_and_conservation_hold_across_many_seeds(specs):
+    for spec in specs:
+        for seed in range(6):
+            r = F.fracture(spec, seed)
+            assert len(r) <= spec.max_chunks
+            assert r.volume_error <= VOLUME_TOLERANCE
+            assert r.total_mass == pytest.approx(
+                spec.volume * spec.density, rel=1e-6
+            )

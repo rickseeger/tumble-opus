@@ -305,6 +305,23 @@ class Block:
         return ((c[0] - h[0], c[1] - h[1], c[2] - h[2]),
                 (c[0] + h[0], c[1] + h[1], c[2] + h[2]))
 
+    def overlap_volume(self, other: "Block") -> float:
+        """Volume of the intersection of this block with *other* (0 if none).
+
+        Two source blocks that interpenetrate would double-count their shared
+        region in the structure volume *and* hand the same space to two
+        different chunks, so this is how the spec validator finds bad specs.
+        """
+        alo, ahi = self.bounds
+        blo, bhi = other.bounds
+        v = 1.0
+        for i in range(3):
+            d = min(ahi[i], bhi[i]) - max(alo[i], blo[i])
+            if d <= 0.0:
+                return 0.0
+            v *= d
+        return v
+
 
 @dataclass(frozen=True)
 class StructureSpec:
@@ -357,6 +374,49 @@ class StructureSpec:
             return self.min_chunk_volume
         return self.volume / (max(self.max_chunks, 1) * 30.0)
 
+    def overlapping_block_pairs(self, eps: float = 1e-9) -> List[Tuple[str, str, float]]:
+        """Source blocks that interpenetrate, as ``(name_a, name_b, volume)``.
+
+        A well-formed spec has none: blocks may touch face-to-face, but any
+        shared *volume* means :attr:`volume` double-counts and the chunks cut
+        from those blocks will occupy the same space.
+        """
+        bad: List[Tuple[str, str, float]] = []
+        for i in range(len(self.blocks)):
+            for j in range(i + 1, len(self.blocks)):
+                a, b = self.blocks[i], self.blocks[j]
+                v = a.overlap_volume(b)
+                if v > eps:
+                    bad.append((a.name, b.name, v))
+        return bad
+
+    def validate(self) -> None:
+        """Raise :class:`ValueError` if this spec cannot be fractured cleanly."""
+        if not self.blocks:
+            raise ValueError(f"spec {self.name!r} has no blocks")
+        for b in self.blocks:
+            if min(b.half_extents) <= 0.0:
+                raise ValueError(
+                    f"spec {self.name!r} block {b.name!r} has a non-positive "
+                    f"half extent: {b.half_extents}"
+                )
+        names = [b.name for b in self.blocks]
+        if len(set(names)) != len(names):
+            raise ValueError(f"spec {self.name!r} has duplicate block names: {names}")
+        bad = self.overlapping_block_pairs()
+        if bad:
+            detail = ", ".join(f"{a}<->{b} ({v:.4f} m^3)" for a, b, v in bad)
+            raise ValueError(
+                f"spec {self.name!r} has interpenetrating source blocks: {detail}. "
+                "Overlapping blocks double-count structure volume and produce "
+                "chunks that occupy the same space."
+            )
+        if self.max_chunks < len(self.blocks):
+            raise ValueError(
+                f"max_chunks={self.max_chunks} is below the block count "
+                f"{len(self.blocks)} for spec {self.name!r}"
+            )
+
 
 # ------------------------------------------------------------------- archetypes
 def tower_spec(max_chunks: int = 380) -> StructureSpec:
@@ -404,7 +464,7 @@ def cluster_spec(max_chunks: int = 240) -> StructureSpec:
             Block("c2", (0.0, 4.0, 5.0), (2.0, 5.0, 5.0)),
             Block("c3", (-9.0, 7.0, 1.5), (1.5, 1.5, 1.5)),
             Block("c4", (9.0, 6.0, 4.0), (2.5, 4.0, 4.0)),
-            Block("c5", (1.0, -9.0, 1.0), (6.0, 1.5, 1.0)),
+            Block("c5", (1.0, -10.5, 1.0), (6.0, 1.5, 1.0)),
         ),
         max_chunks=max_chunks,
     )
@@ -753,11 +813,7 @@ def fracture(spec: StructureSpec, seed: int) -> FractureResult:
     result (see :meth:`FractureResult.serialize`). Never returns more than
     ``spec.max_chunks`` chunks.
     """
-    if spec.max_chunks < len(spec.blocks):
-        raise ValueError(
-            f"max_chunks={spec.max_chunks} is below the block count "
-            f"{len(spec.blocks)} for spec {spec.name!r}"
-        )
+    spec.validate()
 
     started = time.perf_counter()
     origin = spec.resolved_fracture_origin()
@@ -789,6 +845,55 @@ def fracture(spec: StructureSpec, seed: int) -> FractureResult:
 def with_budget(spec: StructureSpec, max_chunks: int) -> StructureSpec:
     """A copy of *spec* with a different chunk budget (specs are frozen)."""
     return replace(spec, max_chunks=max_chunks)
+
+
+def convex_pair_overlap(a: "Chunk", b: "Chunk", eps: float = 1e-6) -> bool:
+    """Exact-ish separating-axis test for two convex chunks.
+
+    Monte-Carlo point sampling can miss a thin overlap entirely (that is how an
+    interpenetrating source block slipped through validation once). This walks
+    every face normal of both solids plus every edge-edge cross product and
+    reports ``False`` as soon as one axis separates them, so a clean result is
+    a real proof of disjointness rather than a statistical hope.
+
+    Solids that merely *touch* (shared face, shared edge) are not overlapping:
+    an axis whose projections meet within *eps* counts as separating.
+    """
+    fa = a.world_faces()
+    fb = b.world_faces()
+    va = a.world_vertices()
+    vb = b.world_vertices()
+
+    axes: List[Vec3] = []
+    for faces in (fa, fb):
+        for f in faces:
+            n = _newell_normal(f)
+            if _length(n) > 1e-12:
+                axes.append(_unit(n))
+
+    def _edges(faces):
+        out = []
+        for f in faces:
+            m = len(f)
+            for i in range(m):
+                d = _sub(f[(i + 1) % m], f[i])
+                if _length(d) > 1e-12:
+                    out.append(_unit(d))
+        return out
+
+    ea, eb = _edges(fa), _edges(fb)
+    for da in ea:
+        for db in eb:
+            c = _cross(da, db)
+            if _length(c) > 1e-9:
+                axes.append(_unit(c))
+
+    for ax in axes:
+        pa = [_dot(ax, p) for p in va]
+        pb = [_dot(ax, p) for p in vb]
+        if min(pa) >= max(pb) - eps or min(pb) >= max(pa) - eps:
+            return False  # separating axis found -> disjoint
+    return True
 
 
 def size_bands(result: FractureResult, bands: int = 3) -> List[int]:

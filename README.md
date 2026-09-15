@@ -141,10 +141,23 @@ Measured output at the shipped budgets (seed 20260914, `tools_fracture_report.py
 | arch | 260 | 1830.0 | 1830.0 | 2.5e-16 | 0.27 / 5.44 / 55.98 | 209:1 | 2.56 | 47 ms |
 | block_cluster | 240 | 1179.0 | 1179.0 | 1.9e-16 | 0.17 / 3.93 / 45.18 | 273:1 | 2.63 | 40 ms |
 
-All four together pre-generate in about 210 ms — comfortably a load-time cost,
+All four together pre-generate in about 190 ms — comfortably a load-time cost,
 never a shatter-time one. `max_chunks` is a hard ceiling that is never exceeded,
 and `fracture()` refuses a budget smaller than the block count rather than
 silently dropping geometry.
+
+**Spec validation.** `fracture()` calls `spec.validate()` first, which rejects
+a structure whose source blocks *interpenetrate*. Overlapping blocks are a
+double fault: the shared region is counted twice in `spec.volume`, and the
+chunks carved from each block occupy the same space. Blocks may touch
+face-to-face; only shared volume is an error. Use
+`spec.overlapping_block_pairs()` to inspect a spec directly.
+
+**Non-overlap is proven exactly, not sampled.** `convex_pair_overlap()` is a
+separating-axis test over both solids' face normals and edge-edge cross
+products. Monte-Carlo point sampling can miss a thin interpenetration; the SAT
+check cannot, so the suite uses it for the real disjointness proof and keeps
+sampling only as a coverage measure.
 
 Print the table yourself:
 
