@@ -334,7 +334,7 @@ behind-player sweep can never remove something still in view.
 `update(dt, player_pos=...)` feeds the field the full player position, since
 the protection rule is a radius and needs all three components.
 
-`tests/test_debris_budget.py` covers all four: 24 assertions on a real
+`tests/test_debris_budget.py` covers all four: 25 assertions on a real
 headless Bullet world, in under a second. No frame-rate claim is made there —
 throughput is measured separately, below.
 
@@ -461,8 +461,9 @@ dynamic bodies and not frozen rubble, that a body held below both velocity
 thresholds for the dwell window transitions to frozen and genuinely stops
 being advanced by the solver, that spin alone keeps it awake and any
 disturbance resets the timer, that eviction picks settled/far/old debris and
-refuses to touch an in-flight or in-view body near the player — spawning less
-instead — and that debris below the world floor or far behind the player is
+refuses to touch an in-flight or in-view body near the player — including a
+chunk tumbling past their shoulder, which is protected for being in flight
+even though it is behind them — spawning less instead — and that debris below the world floor or far behind the player is
 detached from the Bullet world rather than merely dropped from a list. It runs
 in well under a second:
 

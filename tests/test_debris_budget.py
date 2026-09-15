@@ -315,6 +315,41 @@ def test_eviction_takes_the_settled_debris_and_leaves_the_threat_alone():
     assert f.total_evicted == 3
 
 
+def test_in_flight_debris_just_behind_the_player_is_still_protected():
+    """In flight near the player is protected even *behind* them.
+
+    Two independent reasons to protect a body near the player: it is in
+    flight, or it is in view. This asserts the first one on its own, with the
+    second deliberately switched off - the body is behind the player, so only
+    the in-flight clause can save it. A chunk tumbling past the player's
+    shoulder is exactly the debris they are reacting to; vanishing it because
+    it happens to have crossed their Y is the same lie as vanishing it in
+    front of them.
+    """
+    w, f = make_field()
+    f.set_player(pos=(0.0, 0.0, 1.5))
+    r = config.DEBRIS_PROTECT_RADIUS
+    tumbling = place(f, "tumbling", (0.0, -r * 0.3, 6.0), moving=True, spin=True)
+    resting = place(f, "resting", (0.0, -r * 0.3, 0.5))
+
+    # Behind the player, so the in-view clause cannot be what protects it.
+    assert f.behind_distance(tumbling) > 0.0
+    assert f.player_distance(tumbling) < r
+    assert f.in_flight(tumbling) is True
+    assert f.eviction_protected(tumbling) is True, (
+        "an in-flight chunk beside the player was evictable"
+    )
+
+    # Same spot, at rest: that one is rubble, and rubble is fair game.
+    assert f.in_flight(resting) is False
+    assert f.eviction_protected(resting) is False
+
+    assert tumbling not in f.eviction_candidates()
+    assert f.evict_for_budget(5) == 1, "only the settled body should have gone"
+    assert resting.state is DESPAWNED
+    assert tumbling.state is LIVE
+
+
 def test_eviction_prefers_settled_over_moving_when_both_are_unprotected():
     """Beyond the protection radius a moving chunk *can* go - but last."""
     w, f = make_field()
