@@ -4,4 +4,16 @@ __pycache__/
 .pytest_cache/
 
 # Soak run artefacts: metrics, logs, PID files. Evidence, not source.
-soak_runs/
+#
+# NOTE the trailing /* rather than a bare `soak_runs/`. Git does not descend
+# into an excluded DIRECTORY, so a negation underneath one is silently dead.
+# Excluding the directory's *contents* keeps the negations below alive.
+soak_runs/*
+# ...except the two node-20 reference runs. tests/test_soak_sustainability.py
+# asserts against these, so they must survive a fresh clone: they ARE the
+# evidence that sustained demolition stays bounded.
+!soak_runs/node20_long/
+!soak_runs/node20_release/
+!soak_runs/diagnose_probe.jsonl
+# PID files are per-process noise, never evidence.
+soak_runs/*/soak.pid

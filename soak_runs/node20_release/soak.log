@@ -1,0 +1,19 @@
+[driver] headless Tumble (none window) - pid 178597, bounds: <=400000 frames, <=1500.0 s wall, demolitions 240; destroying every 120 frames, seed 90210
+[driver] checkpoints -> /opt/g-harness/workspace/G17/node_20_step_264/repo/soak_runs/node20_release/metrics.jsonl (every 60 frames / 2.0 s)
+[driver] ---- tumble headless soak driver: measurements ----
+  run              : 28681 frames @ dt 0.01667 s  -> 478.02 s simulated in 167.64 s wall (2.85x realtime)
+  physics steps    : 57362   (fixed 0.008333 s)
+  destruction      : every 120 frames  -> 240 structures placed, 240 destroyed
+  frame time (ms)  : mean 4.875   p50 4.541   p95 6.362   max 23.098
+  of which physics : mean 4.476   p95 5.816   max 16.373
+  debris live      : end 260   peak 260   (cap 260, peak stepped 260)
+  debris frozen    : end 146   peak 263
+  bodies spawned   : 32705 total   (peak resident 495)
+  bodies retired   : 46215 total   = 13916 frozen + 32299 despawned   (of which 18519 evicted for budget)
+  pose cache       : 14541564 interned states reclaimed
+  memory (RSS)     : start 102.1 MB  -> peak 114.6 MB  -> end 114.6 MB  (+12.5 MB)
+  seed             : 90210
+[driver] no assertions were made: this node measures, it does not judge.
+[driver] stopped on: max-demolitions  (28681 frames, 167.64 s wall)
+[driver] summary -> /opt/g-harness/workspace/G17/node_20_step_264/repo/soak_runs/node20_release/summary.json
+[driver] checkpoints: 480 records (479 samples) -> /opt/g-harness/workspace/G17/node_20_step_264/repo/soak_runs/node20_release/metrics.jsonl

@@ -1,0 +1,125 @@
+{
+  "source": "soak_runs/node20_release/metrics.jsonl",
+  "samples": 479,
+  "samples_after_warmup": 432,
+  "warmup_frac": 0.1,
+  "frames": 28681,
+  "wall_seconds": 167.64,
+  "sim_seconds": 478.02,
+  "demolitions": 240,
+  "cap": 260,
+  "passed": true,
+  "failed": [],
+  "invariants": [
+    {
+      "name": "demolitions",
+      "passed": true,
+      "headline": "240 structures demolished (need >= 60), 32705 chunks spawned = 136.3/demolition (need >= 20)",
+      "numbers": {
+        "demolitions": 240,
+        "min_demolitions": 60,
+        "total_spawned": 32705,
+        "chunks_per_demolition": 136.27,
+        "min_chunks_per_demolition": 20.0,
+        "demolition_counter_monotone": true,
+        "spawn_counter_monotone": true,
+        "frames": 28681,
+        "wall_s": 167.6,
+        "sim_s": 478.0
+      }
+    },
+    {
+      "name": "live_cap",
+      "passed": true,
+      "headline": "peak live 260, peak stepped 260, cap 260 -> never exceeded",
+      "numbers": {
+        "cap": 260,
+        "peak_live": 260,
+        "peak_stepped": 260,
+        "worst": 260,
+        "samples_over_cap": 0,
+        "first_violations": [],
+        "mean_live": 257.5,
+        "samples": 479
+      }
+    },
+    {
+      "name": "live_no_drift",
+      "passed": true,
+      "headline": "mean live Q1 257.7 -> Q4 257.7 (ratio 1.000, tolerance 1.05)",
+      "numbers": {
+        "quarter_means": [
+          257.66,
+          257.31,
+          257.48,
+          257.67
+        ],
+        "ratio": 1.0,
+        "tolerance": 1.05,
+        "q1_mean": 257.66,
+        "q4_mean": 257.67
+      }
+    },
+    {
+      "name": "frame_time",
+      "passed": true,
+      "headline": "mean frame_ms Q1 8.367 -> Q4 8.633 (ratio 1.032, tolerance 1.25); p95 Q1 16.522 -> Q4 16.493",
+      "numbers": {
+        "quarter_mean_ms": [
+          8.3673,
+          8.6726,
+          8.5931,
+          8.6329
+        ],
+        "quarter_p95_ms": [
+          16.5222,
+          16.975,
+          17.3439,
+          16.4928
+        ],
+        "ratio": 1.0317,
+        "tolerance": 1.25,
+        "q1_mean_ms": 8.3673,
+        "q4_mean_ms": 8.6329
+      }
+    },
+    {
+      "name": "retirement",
+      "passed": true,
+      "headline": "retired_total 4670 -> 46215; gain per quarter [10464, 10408, 10376, 10278] (each must be > 0)",
+      "numbers": {
+        "retired_start": 4670,
+        "retired_end": 46215,
+        "quarter_gains": [
+          10464,
+          10408,
+          10376,
+          10278
+        ],
+        "monotone": true,
+        "total_frozen_end": 13916,
+        "total_despawned_end": 32299,
+        "total_evicted_end": 18519
+      }
+    },
+    {
+      "name": "memory",
+      "passed": true,
+      "headline": "RSS 111.6 -> 114.6 MB (peak 114.6, growth +3.0 MB over 28681 frames); acquisition rate 0.22 -> 0.01 MB/1k frames (ratio 0.04)",
+      "numbers": {
+        "rss_start_mb": 111.59,
+        "rss_end_mb": 114.59,
+        "rss_peak_mb": 114.59,
+        "rss_growth_mb": 3.0,
+        "rss_growth_bound_mb": 250.0,
+        "absolute_ok": true,
+        "rate_first_half_mb_per_1k_frames": 0.223,
+        "rate_second_half_mb_per_1k_frames": 0.0085,
+        "plateau_ratio": 0.0382,
+        "plateau_ratio_bound": 0.5,
+        "plateau_ok": true,
+        "mb_per_demolition": 0.013
+      }
+    }
+  ]
+}

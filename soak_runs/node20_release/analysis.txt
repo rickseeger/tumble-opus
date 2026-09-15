@@ -1,0 +1,24 @@
+==========================================================================
+TUMBLE SOAK SUSTAINABILITY ANALYSIS
+==========================================================================
+  source        : soak_runs/node20_release/metrics.jsonl
+  samples       : 479 (432 after 10% warm-up)
+  horizon       : 28681 frames, 167.6 s wall, 478.0 s simulated
+  demolitions   : 240
+  debris cap    : 260 (game.config.DEBRIS_MAX_LIVE)
+--------------------------------------------------------------------------
+  [PASS] demolitions
+         240 structures demolished (need >= 60), 32705 chunks spawned = 136.3/demolition (need >= 20)
+  [PASS] live_cap
+         peak live 260, peak stepped 260, cap 260 -> never exceeded
+  [PASS] live_no_drift
+         mean live Q1 257.7 -> Q4 257.7 (ratio 1.000, tolerance 1.05)
+  [PASS] frame_time
+         mean frame_ms Q1 8.367 -> Q4 8.633 (ratio 1.032, tolerance 1.25); p95 Q1 16.522 -> Q4 16.493
+  [PASS] retirement
+         retired_total 4670 -> 46215; gain per quarter [10464, 10408, 10376, 10278] (each must be > 0)
+  [PASS] memory
+         RSS 111.6 -> 114.6 MB (peak 114.6, growth +3.0 MB over 28681 frames); acquisition rate 0.22 -> 0.01 MB/1k frames (ratio 0.04)
+--------------------------------------------------------------------------
+  VERDICT: PASS - debris stayed bounded and performance held.
+==========================================================================

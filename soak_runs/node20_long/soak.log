@@ -1,0 +1,66 @@
+[driver] headless Tumble (none window) - pid 178267, bounds: <=400000 frames, <=1500.0 s wall, demolitions 240; destroying every 120 frames, seed 90210
+[driver] checkpoints -> /opt/g-harness/workspace/G17/node_20_step_264/repo/soak_runs/node20_long/metrics.jsonl (every 60 frames / 2.0 s)
+[driver] frame    600/400000  sim   10.00s  live  255  frozen  152  spawned   1002  retired    897  rss   111.8 MB  frame   4.92 ms
+[driver] frame   1200/400000  sim   20.00s  live  243  frozen  130  spawned   1804  retired   2028  rss   117.9 MB  frame   4.21 ms
+[driver] frame   1800/400000  sim   30.00s  live  223  frozen  149  spawned   2409  retired   2922  rss   124.8 MB  frame   4.64 ms
+[driver] frame   2400/400000  sim   40.00s  live  239  frozen  171  spawned   3167  retired   3944  rss   131.4 MB  frame   4.14 ms
+[driver] frame   3000/400000  sim   50.00s  live  255  frozen  139  spawned   3766  retired   4786  rss   136.5 MB  frame   6.36 ms
+[driver] frame   3600/400000  sim   60.00s  live  212  frozen  144  spawned   4468  retired   5852  rss   142.2 MB  frame   3.58 ms
+[driver] frame   4200/400000  sim   70.00s  live  233  frozen  152  spawned   5111  retired   6758  rss   149.2 MB  frame   4.72 ms
+[driver] frame   4800/400000  sim   80.00s  live  239  frozen  171  spawned   5865  retired   7802  rss   156.4 MB  frame   3.92 ms
+[driver] frame   5400/400000  sim   90.00s  live  251  frozen  168  spawned   6452  retired   8631  rss   161.5 MB  frame   5.72 ms
+[driver] frame   6000/400000  sim  100.00s  live  225  frozen  133  spawned   7191  retired   9755  rss   167.2 MB  frame   3.87 ms
+[driver] frame   6600/400000  sim  110.00s  live  236  frozen  156  spawned   7819  retired  10625  rss   174.1 MB  frame   4.80 ms
+[driver] frame   7200/400000  sim  120.00s  live  231  frozen  178  spawned   8550  retired  11646  rss   180.7 MB  frame   3.43 ms
+[driver] frame   7800/400000  sim  130.00s  live  252  frozen  174  spawned   9172  retired  12530  rss   185.7 MB  frame   5.80 ms
+[driver] frame   8400/400000  sim  140.00s  live  212  frozen  145  spawned   9896  retired  13647  rss   191.0 MB  frame   3.77 ms
+[driver] frame   9000/400000  sim  150.00s  live  187  frozen  184  spawned  10521  retired  14553  rss   197.7 MB  frame   5.68 ms
+[driver] frame   9600/400000  sim  160.00s  live  233  frozen  167  spawned  11258  retired  15523  rss   204.1 MB  frame   4.66 ms
+[driver] frame  10200/400000  sim  170.00s  live  247  frozen  154  spawned  11841  retired  16355  rss   208.9 MB  frame   5.90 ms
+[driver] frame  10800/400000  sim  180.00s  live  212  frozen  130  spawned  12559  retired  17435  rss   214.3 MB  frame   4.97 ms
+[driver] frame  11400/400000  sim  190.00s  live  212  frozen  173  spawned  13195  retired  18319  rss   221.0 MB  frame   4.79 ms
+[driver] frame  12000/400000  sim  200.00s  live  230  frozen  193  spawned  13946  retired  19358  rss   227.4 MB  frame   4.57 ms
+[driver] frame  12600/400000  sim  210.00s  live  256  frozen  154  spawned  14550  retired  20230  rss   232.2 MB  frame   5.13 ms
+[driver] frame  13200/400000  sim  220.00s  live  217  frozen  129  spawned  15263  retired  21318  rss   237.7 MB  frame   3.86 ms
+[driver] frame  13800/400000  sim  230.00s  live  215  frozen  166  spawned  15888  retired  22210  rss   244.3 MB  frame   4.06 ms
+[driver] frame  14400/400000  sim  240.00s  live  228  frozen  189  spawned  16648  retired  23267  rss   250.8 MB  frame   4.13 ms
+[driver] frame  15000/400000  sim  250.00s  live  245  frozen  151  spawned  17241  retired  24142  rss   255.5 MB  frame   5.06 ms
+[driver] frame  15600/400000  sim  260.00s  live  217  frozen  138  spawned  17979  retired  25227  rss   261.0 MB  frame   4.09 ms
+[driver] frame  16200/400000  sim  270.00s  live  202  frozen  203  spawned  18614  retired  26160  rss   267.7 MB  frame   3.95 ms
+[driver] frame  16800/400000  sim  280.00s  live  237  frozen  182  spawned  19359  retired  27194  rss   274.0 MB  frame   4.60 ms
+[driver] frame  17400/400000  sim  290.00s  live  254  frozen  167  spawned  19940  retired  28026  rss   278.9 MB  frame   5.83 ms
+[driver] frame  18000/400000  sim  300.00s  live  231  frozen  129  spawned  20664  retired  29097  rss   284.3 MB  frame   4.36 ms
+[driver] frame  18600/400000  sim  310.00s  live  222  frozen  137  spawned  21281  retired  29969  rss   291.0 MB  frame   4.59 ms
+[driver] frame  19200/400000  sim  320.00s  live  241  frozen  190  spawned  22023  retired  30952  rss   297.3 MB  frame   3.69 ms
+[driver] frame  19800/400000  sim  330.00s  live  244  frozen  150  spawned  22610  retired  31828  rss   302.1 MB  frame   4.85 ms
+[driver] frame  20400/400000  sim  340.00s  live  222  frozen  124  spawned  23324  retired  32891  rss   307.6 MB  frame   3.68 ms
+[driver] frame  21000/400000  sim  350.00s  live  203  frozen  180  spawned  23943  retired  33797  rss   314.3 MB  frame   4.25 ms
+[driver] frame  21600/400000  sim  360.00s  live  231  frozen  189  spawned  24688  retired  34813  rss   320.7 MB  frame   3.92 ms
+[driver] frame  22200/400000  sim  370.00s  live  251  frozen  154  spawned  25280  retired  35676  rss   325.4 MB  frame   5.37 ms
+[driver] frame  22800/400000  sim  380.00s  live  215  frozen  139  spawned  26006  retired  36744  rss   330.9 MB  frame   3.83 ms
+[driver] frame  23400/400000  sim  390.00s  live  219  frozen  167  spawned  26636  retired  37645  rss   337.6 MB  frame   5.54 ms
+[driver] frame  24000/400000  sim  400.00s  live  231  frozen  179  spawned  27368  retired  38659  rss   344.0 MB  frame   4.88 ms
+[driver] frame  24600/400000  sim  410.00s  live  244  frozen  174  spawned  27966  retired  39524  rss   348.8 MB  frame   5.97 ms
+[driver] frame  25200/400000  sim  420.00s  live  229  frozen  125  spawned  28703  retired  40623  rss   354.2 MB  frame   4.05 ms
+[driver] frame  25800/400000  sim  430.00s  live  210  frozen  159  spawned  29308  retired  41516  rss   360.9 MB  frame   5.03 ms
+[driver] frame  26400/400000  sim  440.00s  live  247  frozen  133  spawned  30048  retired  42503  rss   367.3 MB  frame   4.38 ms
+[driver] frame  27000/400000  sim  450.00s  live  255  frozen  152  spawned  30642  retired  43304  rss   372.1 MB  frame   5.52 ms
+[driver] frame  27600/400000  sim  460.00s  live  231  frozen  127  spawned  31371  retired  44378  rss   377.5 MB  frame   3.76 ms
+[driver] frame  28200/400000  sim  470.00s  live  227  frozen  152  spawned  31984  retired  45253  rss   384.2 MB  frame   4.21 ms
+[driver] ---- tumble headless soak driver: measurements ----
+  run              : 28681 frames @ dt 0.01667 s  -> 478.02 s simulated in 168.41 s wall (2.84x realtime)
+  physics steps    : 57362   (fixed 0.008333 s)
+  destruction      : every 120 frames  -> 240 structures placed, 240 destroyed
+  frame time (ms)  : mean 4.909   p50 4.707   p95 6.452   max 20.560
+  of which physics : mean 4.508   p95 5.903   max 14.849
+  debris live      : end 260   peak 260   (cap 260, peak stepped 260)
+  debris frozen    : end 146   peak 263
+  bodies spawned   : 32705 total   (peak resident 495)
+  bodies retired   : 46215 total   = 13916 frozen + 32299 despawned   (of which 18519 evicted for budget)
+  pose cache       : 14541564 interned states reclaimed
+  memory (RSS)     : start 102.1 MB  -> peak 390.6 MB  -> end 390.6 MB  (+288.5 MB)
+  seed             : 90210
+[driver] no assertions were made: this node measures, it does not judge.
+[driver] stopped on: max-demolitions  (28681 frames, 168.41 s wall)
+[driver] summary -> /opt/g-harness/workspace/G17/node_20_step_264/repo/soak_runs/node20_long/summary.json
+[driver] checkpoints: 480 records (479 samples) -> /opt/g-harness/workspace/G17/node_20_step_264/repo/soak_runs/node20_long/metrics.jsonl

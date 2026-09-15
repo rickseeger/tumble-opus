@@ -40,6 +40,7 @@ deliberately the fastest direction: the course is meant to be driven down.
 ./run.sh --test                  # run the test suite
 ./run.sh --soak                  # sustained-demolition soak (see below)
 ./run.sh --soak-driver           # instrumentation-only soak driver (see below)
+python tools/analyze_soak.py DIR/metrics.jsonl   # judge a soak: pass/fail + numbers
 ```
 
 `--headless` is the useful one on a server with no display: it builds the
@@ -637,7 +638,60 @@ clock, so a 30-second escalation is exercised in microseconds.
 
 *What is deliberately not claimed here: nothing about whether debris stays
 bounded over a long run. This is the harness. The judging is a separate
-concern with its own evidence.*
+concern with its own evidence — see the next section, which supplies it.*
+
+
+### Judging the soak: the sustainability invariants
+
+`tools/analyze_soak.py` is the other half of the driver. The driver measures
+and never decides; the analyser reads a metrics JSONL and decides, against
+numeric thresholds written down with the reason each has the value it has.
+Exit code 0 only if every invariant holds.
+
+```
+.venv/bin/python tools/analyze_soak.py soak_runs/node20_long/metrics.jsonl
+```
+
+Six checks: the demolition counter is real work and not an incrementing
+integer; live debris **never** exceeds `DEBRIS_MAX_LIVE` at any sample
+(checked over the full series — a hard ceiling gets no warm-up grace); live
+debris does not drift upward across quarters; frame time does not degrade;
+retirement fires in every quarter; and resident memory is bounded both
+absolutely *and* by plateau — the second-half acquisition rate must be at most
+half the first-half rate, so a linear leak cannot pass by being observed
+briefly.
+
+Two reference runs are committed, same seed, same 240-demolition horizon,
+one flag apart:
+
+| | `soak_runs/node20_long` | `soak_runs/node20_release` |
+|---|---|---|
+| demolitions / frames | 240 / 28,681 | 240 / 28,681 |
+| simulated time | 478.0 s | 478.0 s |
+| chunks spawned / retired | 32,705 / 46,215 | 32,705 / 46,215 |
+| peak live debris (cap 260) | 260 | 260 |
+| frame time Q1 → Q4 | 8.061 → 8.328 ms | 8.367 → 8.633 ms |
+| RSS | 104 → **391 MB** | 112 → **115 MB** |
+| verdict | FAIL (memory) | **PASS** |
+
+The physics counters are identical, so the memory column is an attribution,
+not a coincidence. **The debris budget holds**: the cap was never exceeded
+over 32,705 spawned chunks, live count did not drift, frame time was flat.
+The leak is elsewhere — demolished structures in `app.destructibles` retain
+their spent `FractureResult` chunk descriptors at the 1.22 MB apiece that
+`Destructible.release_chunks()` documents. 240 structures predicts 293 MB
+against 286 MB measured. `tools/diagnose_soak_rss.py` is the probe that found
+it; it rules out the `TransformState` table (487 → 453, bounded), the
+`RenderState` table (8 → 8) and glibc fragmentation (`malloc_trim` returned
+1.5 MB of 227) before naming the holder.
+
+The fix already exists: call `Destructible.release_chunks()` when a structure
+finishes collapsing, as `--release-chunks` does. The failing configuration is
+committed next to the passing one rather than tuned away —
+`tests/test_soak_sustainability.py` asserts the defect as a defect with a
+ratchet that only permits improvement, and one test fails the day the leak is
+fixed so the waiver cannot outlive the bug. Full write-up in
+`NODE20_SOAK_REPORT.md`.
 
 
 ## Damage and the destruction trigger
