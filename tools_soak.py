@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 import time
 from dataclasses import dataclass, field as _dc_field
@@ -97,6 +98,41 @@ RSS_GROWTH_MAX_MB = 45.0
 #: means peaks plateau, so any real upward trend is a budget failure.
 LIVE_TREND_FACTOR = 1.15
 
+#: Sane world bounds for any debris body, live or frozen. Debris that leaves
+#: these is a solver blow-up, not gameplay: the course is
+#: :data:`config.COURSE_HALF_WIDTH` (24 m) either side of centre and debris is
+#: launched with a few metres of scatter, so 300 m of lateral travel is already
+#: absurd; 400 m is the "obviously exploded" line. Bodies below
+#: :data:`config.DEBRIS_WORLD_FLOOR_Z` are despawned by the budget, so the
+#: floor bound is that constant with a step of slack for the frame between
+#: crossing it and being reaped.
+WORLD_ABS_X_MAX = 400.0
+WORLD_Z_MAX = 300.0
+WORLD_Z_MIN = config.DEBRIS_WORLD_FLOOR_Z - 20.0
+#: Y is bounded relative to the placed course, which the soak extends, so it
+#: is computed per run rather than fixed here. This is the slack either side.
+WORLD_Y_SLACK = 400.0
+
+#: Positions are swept every Nth frame rather than every frame: a sweep touches
+#: every live and frozen body, and at 10 Hz of simulated time it still catches
+#: an exploding body within 0.1 s of it exploding, long before it could travel
+#: anywhere and come back.
+POSITION_SWEEP_EVERY = 6
+
+#: After the final demolition, active bodies must fall to ACTIVE_BASELINE_MAX
+#: within this many simulated seconds. This is the *return-toward-baseline*
+#: bound with teeth: `final_active` alone can be satisfied by an arbitrarily
+#: long settle phase, whereas this says the recovery is prompt. Measured on
+#: this stack: recovery takes ~4 s of simulated time after a 260-body burst.
+RECOVERY_SECONDS_MAX = 12.0
+
+#: Memory must *plateau*, not merely land under an absolute ceiling. Compared
+#: as MB gained per cycle over the last third of the run against the first
+#: third: a real leak is linear, so the two rates match and the ratio sits near
+#: 1.0; a bounded system's late rate collapses toward 0. This is what makes the
+#: no-leak check independent of how long the run is.
+RSS_PLATEAU_RATIO_MAX = 0.60
+
 #: Archetypes cycled down the course, and how far apart they are placed.
 SOAK_ARCHETYPES = ("cluster", "arch", "slab", "tower")
 SOAK_SPACING = 30.0
@@ -149,6 +185,7 @@ class CycleSample:
     peak_active: int
     end_live: int
     end_frozen: int
+    end_active: int
     rss_mb: float
     destroyed: bool
 
@@ -164,6 +201,8 @@ class SoakResult:
     final_live: int = 0
     peak_active: int = 0
     final_active: int = 0
+    peak_frozen: int = 0
+    final_frozen: int = 0
     peak_total_bodies: int = 0
     final_total_bodies: int = 0
     total_spawned: int = 0
@@ -185,6 +224,26 @@ class SoakResult:
     chunks_released: int = 0
     cap_breaches: List[Tuple[int, int]] = _dc_field(default_factory=list)
     states_reclaimed: int = 0
+
+    # ---- position sanity, swept over every live AND frozen body ----------
+    position_sweeps: int = 0
+    bodies_swept: int = 0
+    nan_bodies: int = 0
+    #: (body name, x, y, z) for every body that left the sane world box.
+    out_of_bounds: List[Tuple[str, float, float, float]] = _dc_field(
+        default_factory=list
+    )
+    max_abs_x: float = 0.0
+    min_z: float = 0.0
+    max_z: float = 0.0
+    max_abs_y: float = 0.0
+    y_bound: float = 0.0
+    #: Simulated seconds from the last demolition until active bodies fell
+    #: back to ACTIVE_BASELINE_MAX. -1.0 means it never did.
+    recovery_seconds: float = -1.0
+    #: Per-cycle RSS growth rate, first third vs last third (MB/cycle).
+    rss_early_slope: float = 0.0
+    rss_late_slope: float = 0.0
 
     # ------------------------------------------------------------- stats
     @property
@@ -245,6 +304,18 @@ class SoakResult:
         return (_mean(peaks[-third:]) / early) if early > 0 else 0.0
 
     @property
+    def rss_plateau_ratio(self) -> float:
+        """Late per-cycle RSS growth rate over the early rate.
+
+        Near 1.0 means memory is still climbing at the rate it started at -
+        a linear leak. Near 0.0 means it has plateaued. Returns 0.0 when the
+        early rate is not positive (nothing grew, nothing to compare).
+        """
+        if self.rss_early_slope <= 0.0:
+            return 0.0
+        return self.rss_late_slope / self.rss_early_slope
+
+    @property
     def cap_overflows(self) -> float:
         """How many times over the cap the run actually spawned."""
         return (self.total_spawned / self.cap) if self.cap else 0.0
@@ -279,6 +350,34 @@ class SoakResult:
                 f"BASELINE: {self.final_active} debris bodies still active "
                 f"after settling (allowed {ACTIVE_BASELINE_MAX})"
             )
+        if self.recovery_seconds < 0.0:
+            out.append(
+                f"BASELINE: active debris never fell back to "
+                f"{ACTIVE_BASELINE_MAX} within the whole settle phase"
+            )
+        elif self.recovery_seconds > RECOVERY_SECONDS_MAX:
+            out.append(
+                f"BASELINE: took {self.recovery_seconds:.1f} simulated s to "
+                f"return to {ACTIVE_BASELINE_MAX} active bodies after the "
+                f"final burst (allowed {RECOVERY_SECONDS_MAX} s)"
+            )
+        if self.nan_bodies:
+            out.append(
+                f"SANITY: {self.nan_bodies} debris bodies had a non-finite "
+                f"(NaN/inf) position - the solver blew up"
+            )
+        if self.out_of_bounds:
+            name, x, y, z = self.out_of_bounds[0]
+            out.append(
+                f"SANITY: {len(self.out_of_bounds)} debris bodies left the "
+                f"sane world box; first was {name} at "
+                f"({x:.1f}, {y:.1f}, {z:.1f})"
+            )
+        if self.position_sweeps < 1 or self.bodies_swept < 1:
+            out.append(
+                "SANITY: no debris positions were ever swept - the position "
+                "check did not run"
+            )
         if self.step_mean_ms > STEP_BUDGET_MS:
             out.append(
                 f"STEP BUDGET: mean step {self.step_mean_ms:.3f} ms exceeds "
@@ -305,6 +404,14 @@ class SoakResult:
                 f"({self.rss_start_mb:.1f} -> {self.rss_settled_mb:.1f}) "
                 f"over {self.structures_destroyed} demolitions "
                 f"(allowed {RSS_GROWTH_MAX_MB} MB)"
+            )
+        if self.rss_plateau_ratio > RSS_PLATEAU_RATIO_MAX:
+            out.append(
+                f"LEAK: RSS is still growing at "
+                f"{self.rss_late_slope:.2f} MB/cycle late in the run vs "
+                f"{self.rss_early_slope:.2f} MB/cycle early "
+                f"({self.rss_plateau_ratio:.2f}x, allowed "
+                f"{RSS_PLATEAU_RATIO_MAX}x) - memory is not plateauing"
             )
         if self.live_trend > LIVE_TREND_FACTOR:
             out.append(
@@ -356,6 +463,21 @@ class SoakResult:
             "rss_growth_mb": round(self.rss_growth_mb, 1),
             "rss_trace_mb": [round(v, 1) for v in self.rss_trace_mb],
             "live_trend": round(self.live_trend, 3),
+            "peak_frozen": self.peak_frozen,
+            "final_frozen": self.final_frozen,
+            "recovery_seconds": round(self.recovery_seconds, 3),
+            "recovery_seconds_max": RECOVERY_SECONDS_MAX,
+            "rss_early_slope_mb_per_cycle": round(self.rss_early_slope, 3),
+            "rss_late_slope_mb_per_cycle": round(self.rss_late_slope, 3),
+            "rss_plateau_ratio": round(self.rss_plateau_ratio, 3),
+            "position_sweeps": self.position_sweeps,
+            "bodies_swept": self.bodies_swept,
+            "nan_bodies": self.nan_bodies,
+            "out_of_bounds": len(self.out_of_bounds),
+            "max_abs_x": round(self.max_abs_x, 2),
+            "max_abs_y": round(self.max_abs_y, 2),
+            "min_z": round(self.min_z, 2),
+            "max_z": round(self.max_z, 2),
             "live_bodies_after_clear": self.live_bodies_after_clear,
             "tracked_records_after_clear": self.tracked_records_after_clear,
             "states_reclaimed": self.states_reclaimed,
@@ -368,6 +490,39 @@ class SoakResult:
 
 
 # ---------------------------------------------------------------- the soak
+def sweep_positions(field, result: "SoakResult") -> None:
+    """Check every debris body's live pose for NaN and for sane bounds.
+
+    Reads `body.pos` - the real Bullet transform, via the same NodePath the
+    renderer would draw from - for every body the field owns, live and frozen
+    alike. Records violations rather than raising, so the report can say how
+    many and which.
+    """
+    result.position_sweeps += 1
+    for body in list(field.live) + list(field.frozen):
+        pos = body.pos
+        x, y, z = float(pos.getX()), float(pos.getY()), float(pos.getZ())
+        result.bodies_swept += 1
+        if not (math.isfinite(x) and math.isfinite(y) and math.isfinite(z)):
+            result.nan_bodies += 1
+            result.out_of_bounds.append((body.name, x, y, z))
+            continue
+        result.max_abs_x = max(result.max_abs_x, abs(x))
+        result.max_abs_y = max(result.max_abs_y, abs(y))
+        result.max_z = max(result.max_z, z)
+        result.min_z = min(result.min_z, z)
+        if (abs(x) > WORLD_ABS_X_MAX or z > WORLD_Z_MAX or z < WORLD_Z_MIN
+                or abs(y) > result.y_bound):
+            result.out_of_bounds.append((body.name, x, y, z))
+
+
+def _slope_mb_per_cycle(values: List[float]) -> float:
+    """Mean MB gained per cycle across a window of RSS samples."""
+    if len(values) < 2:
+        return 0.0
+    return (values[-1] - values[0]) / (len(values) - 1)
+
+
 def _place(app, index: int, seed_base: int):
     """Author one more destructible on the course, the shipping way."""
     archetype = SOAK_ARCHETYPES[index % len(SOAK_ARCHETYPES)]
@@ -419,6 +574,11 @@ def run_soak(
     app.physics.step_fixed = timed_step_fixed
     app.input_state = InputState()
 
+    # The soak authors structures down the course, so the legal Y range is a
+    # function of how many. Computed once, up front, from the placement rule.
+    last_y = SOAK_FIRST_Y + max(0, structures_count - 1) * SOAK_SPACING
+    result.y_bound = last_y + WORLD_Y_SLACK
+
     if verbose:
         print(f"[soak] cap={result.cap} bodies  "
               f"step budget={STEP_BUDGET_MS} ms  "
@@ -456,6 +616,10 @@ def run_soak(
                 result.cap_breaches.append((app.physics.step_count, live))
             result.peak_total_bodies = max(result.peak_total_bodies,
                                            app.debris.total_bodies)
+            result.peak_frozen = max(result.peak_frozen,
+                                     app.debris.frozen_count)
+            if app.physics.step_count % POSITION_SWEEP_EVERY == 0:
+                sweep_positions(app.debris, result)
 
         snap = app.debris.snapshot()
         rss = rss_mb()
@@ -471,6 +635,7 @@ def run_soak(
             skipped_for_budget=last.skipped_for_budget if last else 0,
             peak_live=peak_live, peak_active=peak_active,
             end_live=snap["live"], end_frozen=snap["frozen"],
+            end_active=app.debris.active_count(),
             rss_mb=rss, destroyed=not d.intact,
         )
         result.cycles.append(sample)
@@ -493,11 +658,20 @@ def run_soak(
     if verbose:
         print(f"[soak] demolition done; settling for "
               f"{settle_frames / 60.0:.0f} s of simulated quiet ...")
-    for _ in range(settle_frames):
+    for frame in range(settle_frames):
         app.step_frame(FRAME_DT)
         live = app.debris.live_count
         if live > result.cap:
             result.cap_breaches.append((app.physics.step_count, live))
+        # The return-toward-baseline bound, timed: the first moment active
+        # bodies fall back to the baseline, in SIMULATED seconds from the
+        # last demolition. Recorded once and never revised, so a later
+        # re-wake cannot silently improve it.
+        if result.recovery_seconds < 0.0:
+            if app.debris.active_count() <= ACTIVE_BASELINE_MAX:
+                result.recovery_seconds = (frame + 1) * FRAME_DT
+        if app.physics.step_count % POSITION_SWEEP_EVERY == 0:
+            sweep_positions(app.debris, result)
 
     snap = app.debris.snapshot()
     result.final_live = snap["live"]
@@ -512,6 +686,18 @@ def run_soak(
     result.states_reclaimed = getattr(app.physics, "states_reclaimed", 0)
     result.rss_settled_mb = rss_mb()
     result.rss_trace_mb.append(result.rss_settled_mb)
+    result.final_frozen = snap["frozen"]
+
+    # Is memory plateauing, or still climbing at its opening rate? Compared
+    # over the per-cycle RSS samples: first third against last third.
+    per_cycle = [c.rss_mb for c in result.cycles]
+    if len(per_cycle) >= 6:
+        third = len(per_cycle) // 3
+        result.rss_early_slope = _slope_mb_per_cycle(per_cycle[:third])
+        result.rss_late_slope = _slope_mb_per_cycle(per_cycle[-third:])
+
+    # One last sweep once everything is at rest.
+    sweep_positions(app.debris, result)
 
     # ---- and does everything actually leave, registries included? -------
     app.debris.clear()
@@ -549,6 +735,12 @@ def report(result: SoakResult) -> str:
         "",
         f"active (solved) bodies   : peak {r.peak_active}"
         f" -> final {r.final_active}  (baseline allowed {ACTIVE_BASELINE_MAX})",
+        f"  slept/frozen bodies    : peak {r.peak_frozen}"
+        f" -> final {r.final_frozen}",
+        f"  recovery to baseline   : "
+        + (f"{r.recovery_seconds:.2f} simulated s after the final burst"
+           f"  (allowed {RECOVERY_SECONDS_MAX} s)"
+           if r.recovery_seconds >= 0 else "NEVER"),
         "",
         f"physics steps timed      : {r.physics_steps}"
         f"  ({r.sim_seconds:.1f} s simulated in {r.wall_seconds:.1f} s wall)",
@@ -572,8 +764,21 @@ def report(result: SoakResult) -> str:
         f"  (allowed +{RSS_GROWTH_MAX_MB} MB)",
         f"  interned states reaped : {r.states_reclaimed}",
         f"  spent chunk descriptors released : {r.chunks_released}",
+        f"  plateau (MB/cycle)     : early {r.rss_early_slope:+.2f}"
+        f" -> late {r.rss_late_slope:+.2f}"
+        f"  ({r.rss_plateau_ratio:.2f}x, allowed "
+        f"{RSS_PLATEAU_RATIO_MAX}x)",
         f"per-cycle live trend     : {r.live_trend:.2f}x early-to-late"
         f"  (allowed {LIVE_TREND_FACTOR}x)",
+        "",
+        f"position sanity          : {r.bodies_swept} body-poses swept over "
+        f"{r.position_sweeps} sweeps",
+        f"  non-finite (NaN/inf)   : {r.nan_bodies}",
+        f"  out of world box       : {len(r.out_of_bounds)}",
+        f"  extents |x| / y / z    : {r.max_abs_x:.1f} / {r.max_abs_y:.1f} / "
+        f"[{r.min_z:.1f}, {r.max_z:.1f}]",
+        f"  box                    : |x|<{WORLD_ABS_X_MAX} "
+        f"|y|<{r.y_bound:.0f}  {WORLD_Z_MIN}<z<{WORLD_Z_MAX}",
         f"after field.clear()      : {r.live_bodies_after_clear} bodies in "
         f"world, {r.tracked_records_after_clear} records tracked",
         "",
