@@ -260,6 +260,25 @@ The freeze earns its keep on *promptness and cost*, not on rescuing divergent
 physics: it takes those ~20 s of a few hundred solver-resident bodies (which
 the next collapse would wake straight back up) down to zero solver cost.
 
+### Reaping debris
+
+`DebrisField.reap()` is the lifecycle mechanism, and it is deliberately
+*untuned* — every criterion is off unless the caller asks for it, because
+choosing the actual budget is the game's call, not the physics core's:
+
+```python
+field.reap(max_age=20.0)     # older than 20 simulated seconds
+field.reap(behind_y=cutoff)  # driven past and never to be looked at again
+field.reap(cap=200)          # hard ceiling, oldest debris goes first
+```
+
+Age is measured in **simulated** seconds against `field.clock`, which
+`update(dt)` advances — so reaping behaves identically at any frame rate, and
+is reproducible in a test. `update(dt, max_age=...)` runs the age pass inline.
+`live_count`, `frozen_count` and `total_bodies` reflect a reap immediately, and
+the bodies are genuinely detached from the Bullet world rather than merely
+dropped from a list.
+
 ### Performance budget
 
 `DEBRIS_MAX_LIVE = 260` is a hard ceiling on dynamic debris bodies, never
