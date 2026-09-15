@@ -180,6 +180,27 @@ class DamageSystem:
         self.total_destroyed = 0
         self.reports: List[DamageReport] = []
 
+    # -------------------------------------------------------- registration
+    def register(self, destructible) -> StructureDamage:
+        """Start tracking a structure placed after construction.
+
+        The campaign/soak path: structures authored at runtime need an
+        integrity threshold and a damage record, or `apply_damage` would
+        `KeyError` on them. Idempotent - re-registering returns the existing
+        record rather than resetting accumulated damage.
+        """
+        existing = self.states.get(destructible.name)
+        if existing is not None:
+            if destructible not in self.destructibles:
+                self.destructibles.append(destructible)
+            return existing
+        self.destructibles.append(destructible)
+        st = StructureDamage(
+            name=destructible.name, threshold=integrity_for(destructible)
+        )
+        self.states[destructible.name] = st
+        return st
+
     # ------------------------------------------------------------- lookups
     def state(self, destructible) -> StructureDamage:
         name = getattr(destructible, "name", destructible)
@@ -273,6 +294,11 @@ class DamageSystem:
             report.events = tuple(events)
 
         self.reports.append(report)
+        # Bounded for the same reason DebrisField.events is: a report holds
+        # the ShatterEvents it triggered, which hold their debris bodies.
+        excess = len(self.reports) - config.DAMAGE_REPORT_HISTORY
+        if excess > 0:
+            del self.reports[:excess]
         return report
 
     # ------------------------------------------------------------- resolve

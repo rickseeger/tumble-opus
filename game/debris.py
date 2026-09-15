@@ -509,6 +509,14 @@ class DebrisField:
             bodies=tuple(spawned),
         )
         self.events.append(event)
+        # A ShatterEvent holds its bodies. An unbounded history therefore
+        # pins every body ever spawned, and _despawn() frees nothing but a
+        # dict entry - the cap stays honest while memory climbs forever.
+        # Measured: unbounded, a 14-structure soak kept all 2258 spawned
+        # bodies resident; bounded, 297 (== what is actually in the world).
+        excess = len(self.events) - config.DEBRIS_EVENT_HISTORY
+        if excess > 0:
+            del self.events[:excess]
         return event
 
     def demolish(
@@ -674,22 +682,66 @@ class DebrisField:
         z = getattr(self.physics, "ground_z", None)
         return 0.0 if z is None else float(z)
 
-    def settled(self, body: DebrisBody) -> bool:
-        """The only state debris is allowed to freeze from.
+    def is_supported(self, body: DebrisBody) -> bool:
+        """True when something is provably holding this body up.
 
-        Slow is not sufficient on its own: a chunk at the apex of its arc is
-        momentarily slow too, and freezing it there would pin a slab in the
-        sky. So it must additionally be *supported* - either resting on the
-        ground, or already deactivated by Bullet. Bullet only deactivates a
-        body after :data:`config.DEBRIS_DEACTIVATION_TIME` of sustained low
-        velocity, which a body in free fall never achieves (gravity keeps
-        accelerating it), so deactivation is a sound proxy for "something is
-        holding this up" - which is how rubble resting on top of other rubble
-        gets retired rather than sitting live forever.
+        Slow is not sufficient to call debris settled: a chunk at the apex of
+        its arc is momentarily slow too, and freezing it there would pin a
+        slab in the sky. So a body must also be *supported*, which is any of:
+
+        * its lowest vertex is on the ground (:meth:`DebrisBody.grounded`) -
+          the cheap, obvious case;
+        * Bullet has deactivated it;
+        * it has stayed below the settle thresholds for a full
+          :data:`config.DEBRIS_SETTLE_TIME`. **Sustained quiet is itself the
+          proof of support**: nothing in free flight can stay slow. Gravity
+          takes 0.028 s to accelerate a released body past
+          :data:`config.DEBRIS_SETTLE_LINEAR` (0.28 m/s), and 0.7 s of free
+          fall reaches 6.9 m/s - 24x the threshold. A body that has been quiet
+          for the whole dwell window is therefore resting on *something*, even
+          if that something is other rubble rather than the ground.
+
+        Why the dwell term is needed at all
+        -----------------------------------
+        The original test was ``grounded or not isActive()``, taking Bullet's
+        deactivation as the proxy for "something is holding this up". That
+        proxy is broken by the player:
+        :class:`~panda3d.bullet.BulletCharacterControllerNode` is a kinematic
+        body that is *always* active, so every contact island it touches is
+        kept awake. A rubble pile the player is standing in or against never
+        deactivates; debris resting on that pile is then at rest, not
+        grounded, and permanently "unsettled" - so it never freezes and burns
+        solver time forever.
+
+        Measured, before this fix: 3 structures demolished, then 40 s of
+        simulated quiet, and 119 of 371 debris bodies stayed live and active
+        indefinitely, all of them at rest and none of them grounded.
+        Teleporting the player away, or removing the character from the world,
+        dropped the same run to 0 live / 371 frozen - which is what identified
+        the cause. With the dwell term the run settles to 0 active with the
+        player left exactly where it stood.
+
+        A contact-manifold sweep was tried first and rejected: it is correct,
+        but `BulletWorld.getManifold()` leaks in these bindings (measured ~16
+        MB per 1000 steps over 536 manifolds, growing without bound), which
+        would trade a solver leak for a memory leak. The dwell test needs no
+        Bullet query at all.
+        """
+        if body.grounded(self._ground_z()):
+            return True
+        if not bool(body.node.isActive()):
+            return True
+        return body.quiet_time >= config.DEBRIS_SETTLE_TIME
+
+    def settled(self, body: DebrisBody) -> bool:
+        """The only state debris is allowed to freeze from: at rest AND held up.
+
+        See :meth:`is_supported` for why "held up" cannot simply be "Bullet
+        deactivated it".
         """
         if not body.at_rest():
             return False
-        return body.grounded(self._ground_z()) or not bool(body.node.isActive())
+        return self.is_supported(body)
 
     # ---------------------------------------------------- player awareness
     def set_player(
@@ -1023,13 +1075,18 @@ class DebrisField:
             self.set_player(pos=player_pos, y=player_y)
         froze = 0
         for body in list(self.live):
-            if self.settled(body):
+            # The timer runs on `at_rest` alone, NOT on `settled`: the dwell
+            # is one of the things `is_supported` reads, so making it
+            # conditional on support would be circular and a body resting on
+            # rubble could never accumulate the credit that proves it is
+            # resting on rubble.
+            if body.at_rest():
                 body.quiet_time += dt
-                if body.quiet_time >= config.DEBRIS_SETTLE_TIME:
-                    self._freeze(body)
-                    froze += 1
             else:
                 body.quiet_time = 0.0
+            if body.quiet_time >= config.DEBRIS_SETTLE_TIME and self.settled(body):
+                self._freeze(body)
+                froze += 1
 
         gone = 0
         if max_age is not None:

@@ -126,6 +126,15 @@ DEBRIS_DESPAWN_BEHIND = 70.0
 #: spawn its smallest chunks instead - the cap stays honest, and nothing pops
 #: out of existence in the player's view.
 DEBRIS_PROTECT_RADIUS = 30.0
+#: How many past :class:`~game.debris.ShatterEvent` records the field keeps.
+#: Bounded because a ShatterEvent holds *references to its bodies*: an
+#: unbounded history pins every debris body ever spawned, so despawning the
+#: body frees nothing and a long demolition run leaks ~7 KB per chunk even
+#: though the cap above is perfectly honest about what is being simulated.
+#: Measured over a 14-structure soak: unbounded, 2258 of 2258 spawned bodies
+#: were still alive in memory; bounded to this, 297.
+DEBRIS_EVENT_HISTORY = 24
+
 #: Debris below this world Z has fallen out of the world (off the edge of the
 #: ground plane, through a gap) and can never be seen again. Despawned.
 DEBRIS_WORLD_FLOOR_Z = -40.0
@@ -167,6 +176,11 @@ DAMAGE_DEFAULT_RADIUS = 12.0
 #: from 1.0 at the impact point. Not zero: a clipped structure should still
 #: take something, or the falloff reads as a hard on/off ring.
 DAMAGE_FALLOFF_AT_EDGE = 0.25
+
+#: How many past :class:`~game.damage.DamageReport` records to keep. Same
+#: reason as :data:`DEBRIS_EVENT_HISTORY`: a report carries the ShatterEvents
+#: it caused, which carry their bodies.
+DAMAGE_REPORT_HISTORY = 64
 
 #: The debug strike bound to F until the weapon node lands: enough damage to
 #: flatten anything on the course in one hit, so the playtest key behaves the

@@ -150,24 +150,93 @@ def test_bullet_deactivates_a_meaningful_share_of_the_pile_unaided():
 
     If Bullet never deactivated anything, the sleep thresholds would be
     mistuned and the freeze would be papering over it.
+
+    Measured with the freeze off: 260 of 260 tower chunks are deactivated by
+    Bullet itself within 40 s. So the thresholds are not merely reachable,
+    they are reached by the whole pile.
+
+    Why this runs inside ``no_freeze()`` like every other test in this file
+    -----------------------------------------------------------------------
+    It did not, originally, and it still passed - but only by accident of a
+    race. The settle rule used to require ``grounded or not isActive()``, so
+    a body resting on *other rubble* could not freeze until Bullet had
+    deactivated it first; the freeze therefore always lagged deactivation and
+    a scan of ``f.live`` caught bodies in the window between the two.
+
+    The settle rule now also accepts sustained quiet
+    (:meth:`~game.debris.DebrisField.is_supported`), and
+    :data:`config.DEBRIS_SETTLE_TIME` (0.7 s) is *shorter* than
+    :data:`config.DEBRIS_DEACTIVATION_TIME` (0.8 s) - so the freeze now wins
+    that race by 0.1 s and the body has left ``f.live`` before Bullet ever
+    marks it inactive. Scanning ``f.live`` with the freeze enabled measured 0
+    of 260, which says nothing about Bullet's thresholds and everything about
+    which mechanism got there first. The claim under test is about *pure
+    Bullet*, so it is measured against pure Bullet - the methodology this
+    whole module is built on. `test_the_freeze_wins_the_race_against_bullet`
+    below pins the race itself, so neither fact can regress silently.
     """
     w, f = make_field()
     result = fracture.fracture(fracture.tower_spec(), seed=7)
     event = f.shatter(result, impact_point=(0.0, 0.0, 6.0))
 
-    peak_asleep = 0
-    for _ in range(int(40.0 / DT)):
-        w.step_fixed(1)
-        # Count what Bullet slept on its own BEFORE our retirement runs.
-        peak_asleep = max(
-            peak_asleep, sum(1 for b in f.live if not b.node.isActive())
-        )
-        f.update(DT)
+    with no_freeze():
+        peak_asleep = 0
+        for _ in range(int(40.0 / DT)):
+            w.step_fixed(1)
+            # Count what Bullet slept on its own BEFORE our retirement runs.
+            peak_asleep = max(
+                peak_asleep, sum(1 for b in f.live if not b.node.isActive())
+            )
+            f.update(DT)
 
     assert peak_asleep > event.spawned * 0.25, (
         f"Bullet only ever deactivated {peak_asleep} of {event.spawned} "
         f"bodies by itself - the sleep thresholds are not reachable"
     )
+
+
+def test_the_freeze_wins_the_race_against_bullet_deactivation():
+    """The freeze must retire settled rubble SOONER than Bullet sleeps it.
+
+    This is the property that makes the soak's return-to-baseline bound
+    achievable, and it is a real ordering constraint between two config
+    numbers, so it is asserted rather than left to comments:
+
+    * a frozen body is mass-0 static geometry and costs the solver nothing;
+    * a merely deactivated body is still in the world's island management and
+      is woken by any nearby contact - including the *kinematic player
+      character*, which is always active and keeps every island it touches
+      awake indefinitely.
+
+    So if Bullet's deactivation timer were the shorter of the two, debris
+    resting against a pile the player is standing in would never freeze and
+    would burn solver time forever. Measured before the dwell rule landed: 3
+    structures, then 40 s of quiet, and 119 of 371 bodies stayed live and
+    active permanently.
+    """
+    assert config.DEBRIS_SETTLE_TIME < config.DEBRIS_DEACTIVATION_TIME, (
+        f"settle dwell {config.DEBRIS_SETTLE_TIME} s must be shorter than "
+        f"Bullet's deactivation time {config.DEBRIS_DEACTIVATION_TIME} s, or "
+        f"rubble the player keeps awake never retires"
+    )
+
+    # And the consequence, measured rather than assumed: with the freeze on,
+    # the pile retires through OUR path, not Bullet's.
+    w, f = make_field()
+    result = fracture.fracture(
+        fracture.with_budget(fracture.cluster_spec(), 120), seed=9
+    )
+    event = f.shatter(result, impact_point=(0.0, 0.0, 3.0))
+
+    for _ in range(int(20.0 / DT)):
+        w.step_fixed(1)
+        f.update(DT)
+
+    assert f.frozen_count == event.spawned, (
+        f"only {f.frozen_count} of {event.spawned} bodies froze; "
+        f"{f.live_count} are still being solved"
+    )
+    assert f.active_count() == 0
 
 
 def test_settling_is_not_a_timed_despawn_in_disguise():
