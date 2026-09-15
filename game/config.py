@@ -133,6 +133,22 @@ DEBRIS_PROTECT_RADIUS = 30.0
 #: though the cap above is perfectly honest about what is being simulated.
 #: Measured over a 14-structure soak: unbounded, 2258 of 2258 spawned bodies
 #: were still alive in memory; bounded to this, 297.
+#:
+#: Honest footnote, recorded because it changes what this constant is *for*.
+#: Since :meth:`game.debris.DebrisBody.release` landed (node 16), a despawned
+#: body no longer owns its Bullet node, collision shape or chunk descriptor -
+#: so retained history now pins only a ~150-byte slotted shell, not ~7 KB of
+#: simulation. Re-measured: a 60-structure soak with this set to 1e9 grows
+#: +10.7 MB, against +10.6 MB bounded, and the soak's plateau bound (rightly)
+#: does not fire. The mutation probe records this as the one mutation the soak
+#: does not catch, and the reason is that it is genuinely no longer a leak at
+#: that scale rather than a gap in the bounds.
+#:
+#: It is kept bounded anyway, for two reasons: the shells still accumulate
+#: linearly (~15 MB per 100k bodies spawned, which an endless campaign will
+#: reach even if a 60-structure soak does not), and a *bounded* history is the
+#: structural guarantee that no future field added to DebrisBody can silently
+#: re-pin something large.
 DEBRIS_EVENT_HISTORY = 24
 
 #: Debris below this world Z has fallen out of the world (off the edge of the
