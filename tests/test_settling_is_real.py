@@ -190,3 +190,46 @@ def test_settling_is_not_a_timed_despawn_in_disguise():
     for body in f.live + f.frozen:
         assert body.lowest_z() > -0.05
         assert abs(float(body.pos.getX())) < 100.0
+
+
+@pytest.mark.parametrize("archetype,bound", [
+    ("cluster", 45.0),
+    ("arch", 45.0),
+    ("tower", 45.0),
+])
+def test_every_archetype_reaches_rest_under_pure_bullet(archetype, bound):
+    """No archetype relies on the freeze to stop moving.
+
+    Measured settle times on this machine with the freeze disabled: cluster
+    ~24 s, tower ~25 s. The tower is the worst case by a wide margin (380
+    chunks, 8589 t, capped to 260 bodies), which is exactly why it is here:
+    the headless demo's old 15 s default stopped short of it and honestly
+    reported "not at rest", which looked like broken physics but was merely
+    an unfinished run. The 45 s bound is that measurement with headroom.
+    """
+    w, f = make_field()
+    spec = fracture.ARCHETYPES[archetype]()
+    result = fracture.fracture(spec, seed=7)
+    lo, hi = result.bounds
+    f.shatter(result, impact_point=(0.0, 0.0, lo[2] + (hi[2] - lo[2]) * 0.22))
+
+    with no_freeze():
+        settled_at = None
+        t = 0.0
+        while t < bound and settled_at is None:
+            w.step_fixed(1)
+            f.update(DT)
+            t += DT
+            if not any(b.node.isActive() for b in f.live):
+                settled_at = t
+
+        assert f.frozen_count == 0, "the freeze fired; this proves nothing"
+        assert settled_at is not None, (
+            f"{archetype}: still moving after {bound:.0f} s of pure Bullet "
+            f"(max|v|={max(b.speed() for b in f.live):.4f} m/s)"
+        )
+        assert max(b.speed() for b in f.live) == 0.0
+        assert max(b.spin() for b in f.live) == 0.0
+        # And it settled on the floor, not somewhere impossible.
+        lows = [b.lowest_z() for b in f.live]
+        assert min(lows) > -0.05, f"{archetype} sank {min(lows):.4f} m"

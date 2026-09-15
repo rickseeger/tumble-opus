@@ -1119,3 +1119,25 @@ def test_demo_benchmark_mode_prints_numbers(capsys):
     assert stats["ms_per_step"] < stats["budget_ms"]
     assert "real-time factor" in out
     assert "per step" in out
+
+
+def test_demo_reports_the_measured_settle_time(capsys):
+    """The demo must say WHEN the pile came to rest, not just whether.
+
+    Its old 15 s default stopped short of the heaviest tower's ~25 s settle
+    time, printing "every body at rest: False" - which reads as broken
+    physics but was an unfinished run. It now measures and reports the real
+    settle time, and says so when the window was too short.
+    """
+    import tools_debris_demo
+
+    stats = tools_debris_demo.run_structure("cluster", seed=7, seconds=30.0)
+    out = capsys.readouterr().out
+
+    assert stats["all_asleep"] is True
+    assert stats["settled_at"] is not None, "the demo never reached rest"
+    assert 0.0 < stats["settled_at"] < 30.0
+    assert "came to rest at t=" in out
+    assert "at-rest" in out
+    assert stats["final"]["max_speed"] == 0.0
+    assert stats["final"]["max_spin"] == 0.0

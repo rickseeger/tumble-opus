@@ -243,10 +243,18 @@ Settled debris is frozen to mass-0 static geometry, which zeroes its
 velocity — so "everything has near-zero velocity and is asleep" would be
 trivially true even if the physics jittered forever. So
 `tests/test_settling_is_real.py` runs with **the freeze disabled** and
-requires pure Bullet to bring the pile to rest unaided. It does: a 150-chunk
-cluster collapse decays from ~10 m/s peak at t=2 s to exactly 0 m/s and
-0 rad/s with every body deactivated by t≈24 s, kinetic energy reaching 0 J
-with no body removed, everything resting above the ground plane.
+requires pure Bullet to bring the pile to rest unaided. It does, for every
+archetype: a 150-chunk cluster collapse decays from ~10 m/s peak at t=2 s to
+exactly 0 m/s and 0 rad/s with every body deactivated by t≈24 s, and the
+worst case — a 380-chunk, 8589 t tower capped to 260 bodies — reaches exact
+zero at t≈25 s. Kinetic energy reaches 0 J with no body removed, everything
+resting above the ground plane.
+
+That last number is worth stating plainly, because it bit the demo: the
+headless report used to stop at 15 s and print `every body at rest: False`
+for the tower. That looked like broken physics and was not — it was an
+unfinished run. The demo now defaults to 30 s, *measures* when rest was
+reached, and prints it (`came to rest at t=20.10 s`).
 
 The freeze earns its keep on *promptness and cost*, not on rescuing divergent
 physics: it takes those ~20 s of a few hundred solver-resident bodies (which
@@ -276,7 +284,7 @@ demolition does not stall the frame it happens on.
 Watch it happen, phase by phase, with no display:
 
 ```
-.venv/bin/python tools_debris_demo.py --structure cluster --seconds 15
+.venv/bin/python tools_debris_demo.py --structure cluster
 .venv/bin/python tools_debris_demo.py --benchmark
 ```
 

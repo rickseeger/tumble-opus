@@ -25,6 +25,12 @@ from game.debris import DebrisField            # noqa: E402
 from game.physics import PhysicsWorld          # noqa: E402
 
 #: Where the report takes a reading, in seconds of simulated time.
+#: Where the report takes a reading, in seconds of simulated time. The last
+#: two are far enough out to be real: measured on this stack, the heaviest
+#: structure (a 380-chunk / 8589 t tower, capped to 260 bodies) needs ~25 s to
+#: come fully to rest under pure Bullet, so a run that stopped at 15 s would
+#: honestly report "not at rest" and look like a failure when it is merely
+#: unfinished.
 PHASES = (
     ("launch", 0.0),
     ("airborne", 0.25),
@@ -32,7 +38,8 @@ PHASES = (
     ("tumbling", 3.0),
     ("rolling", 6.0),
     ("settling", 10.0),
-    ("at-rest", 15.0),
+    ("quiet", 18.0),
+    ("at-rest", 30.0),
 )
 
 HEADER = (
@@ -87,6 +94,7 @@ def run_structure(name: str, seed: int, seconds: float, verbose: bool = True) ->
     phases = [(lbl, t) for lbl, t in PHASES if t <= seconds]
     next_phase = 0
     worst_z = float("inf")
+    settled_at = None
     sim_started = time.perf_counter()
 
     if phases and phases[0][1] == 0.0:
@@ -98,6 +106,10 @@ def run_structure(name: str, seed: int, seconds: float, verbose: bool = True) ->
         physics.step_fixed(1)
         field.update(dt, player_y=None)
         t = (step + 1) * dt
+        if settled_at is None and not any(
+            b.node.isActive() for b in field.live
+        ):
+            settled_at = t
         while next_phase < len(phases) and t >= phases[next_phase][1]:
             snap = field.snapshot()
             worst_z = min(worst_z, snap["min_z"])
@@ -115,7 +127,13 @@ def run_structure(name: str, seed: int, seconds: float, verbose: bool = True) ->
         print(f"simulated {seconds:.1f} s in {wall:.2f} s wall clock "
               f"-> {seconds / max(wall, 1e-9):.2f}x real time "
               f"({wall / max(total_steps, 1) * 1000.0:.3f} ms/step)")
-        print(f"every body at rest   : {all_asleep}")
+        if settled_at is None:
+            print(f"every body at rest   : False - STILL MOVING after "
+                  f"{seconds:.1f} s (try --seconds 30; the heaviest tower "
+                  f"needs ~25 s)")
+        else:
+            print(f"every body at rest   : {all_asleep} "
+                  f"(came to rest at t={settled_at:.2f} s)")
         print(f"final live/frozen    : {final['live']} / {final['frozen']}")
         print(f"lowest debris vertex : {final['min_z']:.4f} m "
               f"(ground is 0.0 - negative means penetration)")
@@ -129,6 +147,7 @@ def run_structure(name: str, seed: int, seconds: float, verbose: bool = True) ->
         "realtime_factor": seconds / max(wall, 1e-9),
         "ms_per_step": wall / max(total_steps, 1) * 1000.0,
         "all_asleep": all_asleep,
+        "settled_at": settled_at,
         "final": final,
     }
 
@@ -171,7 +190,9 @@ def main(argv=None) -> int:
     p.add_argument("--structure", default="tower",
                    choices=sorted(fracture.ARCHETYPES) + ["all"])
     p.add_argument("--seed", type=int, default=7)
-    p.add_argument("--seconds", type=float, default=15.0)
+    p.add_argument("--seconds", type=float, default=30.0,
+                   help="simulated seconds; the heaviest tower needs ~25 s "
+                        "to come fully to rest")
     p.add_argument("--benchmark", action="store_true",
                    help="run the stepping benchmark instead of the demo")
     args = p.parse_args(argv)
