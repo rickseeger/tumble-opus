@@ -26,7 +26,7 @@ run, and launches the game. Later runs skip straight to launching.
 | Mouse          | look                            |
 | `Shift`        | sprint                          |
 | `Space`        | jump                            |
-| `F`            | demolish the nearest structure  |
+| `F`            | strike the nearest structure    |
 | `Esc`          | quit                            |
 
 You are on the ground with real gravity — no flying, no noclip. Forward is
@@ -69,6 +69,7 @@ game/world.py      course authoring: ground plane + box towers    (no render dep
 game/fracture.py   fracture generation library: spec -> convex chunks (pure data)
 game/structures.py destructible placement: static proxies + pre-generated chunks
 game/debris.py     runtime shatter + debris physics: chunks -> Bullet bodies
+game/damage.py     accumulated damage + integrity thresholds: the destruction TRIGGER
 game/render_debris.py the 1A glowing-wireframe treatment (render layer only)
 game/app.py        ShowBase host: visuals, lights, camera, input binding
 tools_fracture_report.py  headless per-archetype fracture summary table
@@ -318,6 +319,58 @@ Watch it happen, phase by phase, with no display:
 ```
 
 
+## Damage and the destruction trigger
+
+`game/damage.py` is the decision layer. Before it, the game had two halves
+that never met: the debris layer knew *how* to turn a structure into rigid
+bodies, and nothing ever decided that it *should* — destruction only happened
+because a test, a demo or a keypress asked for it directly.
+
+`DamageSystem` holds one damage tally per placed structure, with an integrity
+threshold proportional to the structure's authored volume
+(`STRUCTURE_INTEGRITY_PER_M3`, floored at `STRUCTURE_INTEGRITY_MIN`), so the
+60 m tower is genuinely harder to bring down than a low cluster:
+
+```python
+app.strike((0.0, 30.0, 4.0), amount=500.0, radius=14.0)   # the gameplay path
+```
+
+`apply_damage` measures distance to each structure's *volume*, not its
+centroid — a blast against the face of a 60 m tower is a direct hit, not a
+30 m near miss — and lerps the damage from full strength at the impact point
+down to `DAMAGE_FALLOFF_AT_EDGE` at the rim. When a tally crosses its
+threshold the structure is demolished through the game's real path:
+`TumbleApp.demolish` → `DebrisField.demolish`, which pulls the static
+collision proxies out of the Bullet world *and* the scene graph and spawns the
+pre-generated chunk set in their place, inheriting the structure's world
+transform.
+
+Three properties are deliberate:
+
+* **Damage is only ever caused by an explicit call.** Nothing watches
+  contacts. Debris raining onto the next tower must not demolish it by
+  accident, and a collapse must not chain down the course — there is a test
+  for exactly that.
+* **Destruction resolves before physics advances.** Damage enqueues;
+  `step_frame` calls `damage.resolve()` *before* `physics.advance()`, so a
+  structure damaged during a frame is rubble before a single substep of that
+  frame runs. The intact proxies and their own debris never coexist for one
+  tick — which is what stops the chunks spawning interpenetrated with the
+  boxes they replace. `apply_damage` resolves immediately by default too; the
+  deferral exists so damage can safely be raised from inside a physics
+  callback, where mutating the world mid-step is illegal.
+* **Freshly spawned debris is queryable immediately.** `damage.debris_near()`
+  and `damage.debris_in_contact()` are the hooks the later "debris hurts the
+  player" node reads, and the tests assert the new bodies show up there on the
+  frame they spawn — not one frame later.
+
+Direct `demolish()` calls (campaign script, tests, the debug key) call
+`damage.note_destroyed()`, so the tally can never claim a pile of rubble is
+still standing at 0 % damage.
+
+No budgeting lives in this module. How much debris the world may hold is
+`game/debris.py`'s business.
+
 ## Tests
 
 ```
@@ -333,6 +386,22 @@ forward input advances position along the *heading* rather than a world axis,
 that the player never rises without a jump input, that the eye/camera offset
 holds while moving and turning, and that the app boots headless and shuts
 down cleanly.
+
+`tests/test_damage_destruction.py` covers the damage trigger end to end
+through the real headless game loop: that damage below the threshold destroys
+nothing, that crossing it removes every collision proxy from both the Bullet
+world and the scene graph while spawning exactly `chunk_count` debris bodies
+inside the original structure's bounding volume, that those bodies launch with
+varied non-zero velocity and spin, that after 45 simulated seconds they have
+fallen, settled above the ground plane with no tunnelling and no non-finite
+coordinates, that they are reachable through the damage system's query path on
+the frame they spawn, that a collapse does not chain into its neighbours, and
+that a whole burst down the course runs through `step_frame` without
+exception. Run just that file with:
+
+```
+./run.sh --test tests/test_damage_destruction.py
+```
 
 ### Not verified automatically
 

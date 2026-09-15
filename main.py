@@ -30,7 +30,8 @@ def parse_args(argv=None):
     p.add_argument(
         "--demolish",
         action="store_true",
-        help="headless only: blow up each structure as the player reaches it",
+        help="headless only: strike each structure as the player reaches it, "
+             "through the real accumulated-damage destruction path",
     )
     return p.parse_args(argv)
 
@@ -59,9 +60,14 @@ def main(argv=None) -> int:
                     # Fire when the structure's near face is inside weapon
                     # range. A standing structure genuinely blocks the lane,
                     # so this is also what lets the run get down the course.
+                    #
+                    # This goes through app.strike() -> DamageSystem, so the
+                    # smoke run exercises the REAL trigger: damage
+                    # accumulates, crosses the structure's integrity
+                    # threshold, and destruction happens as a consequence.
                     if d.intact and lo[1] - y <= 18.0:
-                        event = app.demolish(d)
-                        if event is not None:
+                        report = app.strike(d.default_impact_point())
+                        for event in report.events:
                             events.append((event, y))
         end = app.player.pos
 
@@ -83,6 +89,11 @@ def main(argv=None) -> int:
                       f"(of {event.chunk_count} chunks, "
                       f"{event.skipped_for_budget} over budget) in "
                       f"{event.build_seconds * 1000.0:.1f} ms")
+            dmg = app.damage.snapshot()
+            print(f"[tumble] damage: dealt={dmg['damage_dealt']:.0f} "
+                  f"structures destroyed by threshold="
+                  f"{dmg['destroyed']}/{dmg['structures']} "
+                  f"(intact={dmg['intact']})")
             snap = app.debris.snapshot()
             print(f"[tumble] demolitions={app.demolitions} "
                   f"debris live={snap['live']} frozen={snap['frozen']} "

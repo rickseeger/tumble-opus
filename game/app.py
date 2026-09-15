@@ -22,6 +22,7 @@ from panda3d.core import (
 )
 
 from . import config, structures
+from .damage import DamageSystem
 from .debris import DebrisField
 from .physics import PhysicsWorld
 from .player import InputState, Player
@@ -56,6 +57,16 @@ class TumbleApp(ShowBase):
         # all four archetypes, measured) - never on the frame one comes down.
         self.destructibles = structures.build_destructibles(self.physics)
         self.debris = DebrisField(self.physics)
+        # The decision layer: accumulated damage, integrity thresholds, and
+        # the trigger that turns a building into debris. `on_destroy` is this
+        # app's own demolish(), so damage runs the game's REAL destruction
+        # path - proxies out of the Bullet world, chunks in, visuals swapped.
+        self.damage = DamageSystem(
+            self.destructibles,
+            self.debris,
+            physics=self.physics,
+            on_destroy=self.demolish,
+        )
 
         self.player = Player(self.physics)
         self.input_state = InputState()
@@ -73,9 +84,10 @@ class TumbleApp(ShowBase):
             self._setup_camera()
             self._bind_keys()
             self.accept("escape", self.user_exit)
-            # Placeholder trigger until the weapon node lands: blow up the
-            # nearest structure still standing.
-            self.accept("f", self.demolish_nearest)
+            # Placeholder trigger until the weapon node lands. It goes
+            # through the damage system rather than calling demolish()
+            # directly, so the key exercises the same path a weapon will.
+            self.accept("f", self.strike_nearest)
 
         self.taskMgr.add(self._update, "tumble-update")
 
@@ -191,6 +203,10 @@ class TumbleApp(ShowBase):
         self._poll_mouse()
         self.player.apply_input(self.input_state)
         self.input_state.clear_mouse()
+        # Anything that reached its destruction threshold since the last
+        # frame becomes rubble BEFORE a single substep runs, so the intact
+        # structure and its debris never coexist for even one tick.
+        self.damage.resolve()
         steps = self.physics.advance(dt)
         # Retire settled and far-behind debris. Skipping this is how the
         # body budget gets eaten: the debris itself would simulate forever,
@@ -215,16 +231,42 @@ class TumbleApp(ShowBase):
         if event is None:
             return None
         self.demolitions += 1
+        # Keep the damage tally honest even when something demolishes a
+        # structure directly (campaign script, tests, the debug key).
+        self.damage.note_destroyed(destructible)
         if not self.headless:
             self._swap_to_debris_visuals(destructible, event)
         return event
 
     def demolish_nearest(self, impulse: float = config.DEBRIS_IMPULSE):
-        """Demolish whichever structure is still standing and closest."""
+        """Demolish whichever structure is still standing and closest.
+
+        The blunt instrument: skips the damage tally entirely. Scripts and
+        tests use it; gameplay should go through :meth:`strike`.
+        """
         target = structures.nearest_intact(self.destructibles, self.player.pos)
         if target is None:
             return None
         return self.demolish(target, impulse=impulse)
+
+    # --------------------------------------------------------------- damage
+    def strike(self, point, amount: float = config.DEBUG_STRIKE_DAMAGE,
+               radius: float = config.DEBUG_STRIKE_RADIUS):
+        """Land damage at a world point; demolish whatever that finishes off.
+
+        This is the gameplay path - the surface the weapon node will call.
+        Destruction happens here only as a consequence of accumulated damage
+        crossing a structure's integrity threshold.
+        """
+        return self.damage.apply_damage(point, amount, radius=radius)
+
+    def strike_nearest(self, amount: float = config.DEBUG_STRIKE_DAMAGE,
+                       radius: float = config.DEBUG_STRIKE_RADIUS):
+        """Debug key: strike the nearest structure still standing."""
+        target = structures.nearest_intact(self.destructibles, self.player.pos)
+        if target is None:
+            return None
+        return self.strike(target.default_impact_point(), amount, radius)
 
 
 def run(headless: bool = False) -> TumbleApp:

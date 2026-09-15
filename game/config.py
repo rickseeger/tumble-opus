@@ -131,6 +131,32 @@ DEBRIS_SPIN_HEAVY = 5.0
 DEBRIS_SPIN_LIGHT = 14.0
 
 
+# --------------------------------------------------------------------- damage
+# What it takes to bring a structure down. `game.damage` owns the tally; these
+# are the only numbers it reads.
+
+#: Damage a structure absorbs per cubic metre of authored volume before it
+#: reaches its destruction threshold. Scaled by volume so a 60 m tower is
+#: genuinely tougher than a low cluster, and so the numbers keep meaning
+#: something if the placement list changes.
+STRUCTURE_INTEGRITY_PER_M3 = 0.5
+#: Floor, so a tiny structure is not one-shot by a stray graze.
+STRUCTURE_INTEGRITY_MIN = 50.0
+
+#: Default blast radius (m) for `DamageSystem.apply_damage`.
+DAMAGE_DEFAULT_RADIUS = 12.0
+#: Damage multiplier at the very edge of the blast radius; it lerps linearly
+#: from 1.0 at the impact point. Not zero: a clipped structure should still
+#: take something, or the falloff reads as a hard on/off ring.
+DAMAGE_FALLOFF_AT_EDGE = 0.25
+
+#: The debug strike bound to F until the weapon node lands: enough damage to
+#: flatten anything on the course in one hit, so the playtest key behaves the
+#: way a demo key should.
+DEBUG_STRIKE_DAMAGE = 1.0e6
+DEBUG_STRIKE_RADIUS = 20.0
+
+
 # ------------------------------------------------------------------- display
 #: No window, no graphics pipe at all: the sim runs bare. Used by pytest.
 #: Solver settings, shared by every display mode. These are global Bullet
