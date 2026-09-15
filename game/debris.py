@@ -37,17 +37,28 @@ Every number here was measured on this stack (Panda3D 1.10.16 / Bullet, fixed
    positional correction for an overlap does not get injected back as bounce
    velocity.
 
-3. **Bullet's own sleep is not enough in a dense pile.** With 260 bodies in a
-   rubble heap, ~250 of them stay nominally `isActive()` indefinitely: contact
-   churn keeps resetting the deactivation timer even though nothing is really
-   moving (measured residual |v| < 0.4 m/s, |w| < 0.2 rad/s, and falling). So
-   :class:`DebrisField` runs its own stricter settle detector on top, and
-   *freezes* a body that has been quiet for
-   :data:`config.DEBRIS_SETTLE_TIME`: mass is set to 0, the body becomes
-   static geometry. It is still there, still visible, still collidable by the
-   later damage node - it just costs the solver nothing. That is what makes
-   "debris comes to rest, not jitters forever" literally true rather than
-   approximately true.
+3. **Bullet's sleep works, but it is slow, and the freeze is what makes rest
+   cheap.** Re-measured properly (see `tests/test_settling_is_real.py`, which
+   runs with the freeze *disabled*): pure Bullet does bring a 150-chunk
+   cluster collapse all the way to rest on its own - peak ~10 m/s at t=2 s,
+   decaying to exactly zero with every body deactivated by t~24 s. So the
+   tuning is genuinely convergent and the settling is real physics, not a
+   trick.
+
+   What it is not, is *prompt* or *cheap*: for the ~20 s between "visually
+   stopped" and "Bullet finally deactivates", a couple of hundred bodies stay
+   in the solver's islands, and a fresh collapse nearby wakes them straight
+   back up. So :class:`DebrisField` runs a stricter settle detector on top,
+   and *freezes* a body that has been quiet for
+   :data:`config.DEBRIS_SETTLE_TIME` **and** is actually touching down: mass
+   goes to 0 and it becomes static geometry. Still there, still visible, still
+   collidable by the later damage node - it just costs the solver nothing.
+
+   An earlier draft of this docstring claimed Bullet "never" sleeps a dense
+   pile and that ~250 of 260 bodies stay active indefinitely. That was wrong:
+   measured, 129 of 260 deactivate unaided, and with freezing off the whole
+   pile reaches exact zero. The freeze is a performance and promptness
+   measure, not a cover-up, and the tests now prove the difference.
 
 Budget
 ------
