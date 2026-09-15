@@ -42,6 +42,10 @@ class PhysicsWorld:
         gravity_z: float = config.GRAVITY_Z,
         fixed_dt: float = config.FIXED_DT,
     ) -> None:
+        # Bullet reads its solver settings at world-construction time, so this
+        # must happen before the BulletWorld below exists. Idempotent.
+        config.ensure_bullet_config()
+
         self.world = BulletWorld()
         self.world.setGravity(Vec3(0.0, 0.0, gravity_z))
         self.gravity_z = gravity_z
@@ -54,6 +58,7 @@ class PhysicsWorld:
         self.bodies: Dict[str, NodePath] = {}
         self.box_specs: List[BoxSpec] = []
         self.ground_np: NodePath | None = None
+        self.ground_z: float | None = None
 
         self.step_count = 0
         self.sim_time = 0.0
