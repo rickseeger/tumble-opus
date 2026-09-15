@@ -130,7 +130,7 @@ class DebrisBody:
 
     __slots__ = (
         "name", "chunk", "node", "np", "field", "state",
-        "spawn_step", "quiet_time", "structure", "base_mass",
+        "spawn_step", "spawn_time", "quiet_time", "structure", "base_mass",
         "size_blend", "_frozen_at",
     )
 
@@ -144,6 +144,7 @@ class DebrisBody:
         base_mass: float,
         size_blend: float,
         spawn_step: int,
+        spawn_time: float = 0.0,
     ) -> None:
         self.name = name
         self.chunk = chunk
@@ -153,6 +154,8 @@ class DebrisBody:
         self.base_mass = base_mass
         self.size_blend = size_blend
         self.spawn_step = spawn_step
+        #: Field clock reading (simulated seconds) when this body spawned.
+        self.spawn_time = float(spawn_time)
         self.state = LIVE
         self.quiet_time = 0.0
         self._frozen_at = -1
@@ -210,6 +213,10 @@ class DebrisBody:
         if self.state is DESPAWNED:
             return True
         return not bool(self.node.isActive())
+
+    def age(self, now: float) -> float:
+        """Simulated seconds this body has existed, given the field clock."""
+        return max(0.0, float(now) - self.spawn_time)
 
     def at_rest(
         self,
@@ -319,6 +326,10 @@ class DebrisField:
         self.total_frozen = 0
         self.total_despawned = 0
         self._serial = 0
+        #: Simulated seconds this field has been stepped, advanced by
+        #: :meth:`update`. Debris age is measured against it, so age-based
+        #: reaping is independent of wall clock and of frame rate.
+        self.clock = 0.0
 
         # Give the ground a real restitution, otherwise Bullet's
         # multiplicative combine means debris cannot bounce at all. Measured:
@@ -582,6 +593,7 @@ class DebrisField:
             name=name, chunk=chunk, node=node, np_=np_,
             structure=structure_name, base_mass=mass, size_blend=blend,
             spawn_step=int(getattr(self.physics, "step_count", 0)),
+            spawn_time=self.clock,
         )
         self.live.append(body)
         self.all_bodies[name] = body
@@ -735,11 +747,77 @@ class DebrisField:
         self.total_despawned += 1
 
     # -------------------------------------------------------------- update
-    def update(self, dt: float, player_y: Optional[float] = None) -> dict:
+    def reap(
+        self,
+        max_age: Optional[float] = None,
+        behind_y: Optional[float] = None,
+        cap: Optional[int] = None,
+    ) -> int:
+        """Despawn debris by age, by distance behind the player, or by cap.
+
+        The lifecycle mechanism, exposed but deliberately **untuned**: every
+        criterion is off unless the caller passes it. Choosing the actual
+        budget, and wiring this to the game loop, is the next node's job - this
+        module only guarantees the mechanism exists, is exact, and that
+        :attr:`live_count` / :attr:`total_bodies` reflect it immediately.
+
+        Parameters
+        ----------
+        max_age:
+            Despawn any body older than this many *simulated* seconds, measured
+            against :attr:`clock` (which :meth:`update` advances). Frozen and
+            live debris alike.
+        behind_y:
+            Despawn any body whose world Y is below this cutoff - debris the
+            player has driven past and will never look at again.
+        cap:
+            Hard ceiling on total bodies. The oldest are despawned first until
+            :attr:`total_bodies` is at or below it.
+
+        Returns the number of bodies despawned.
+        """
+        gone = 0
+
+        if max_age is not None:
+            limit = float(max_age)
+            for body in list(self.live) + list(self.frozen):
+                if body.age(self.clock) > limit:
+                    self._despawn(body)
+                    gone += 1
+
+        if behind_y is not None:
+            cutoff = float(behind_y)
+            for body in list(self.live) + list(self.frozen):
+                if float(body.np.getY()) < cutoff:
+                    self._despawn(body)
+                    gone += 1
+
+        if cap is not None:
+            ceiling = max(0, int(cap))
+            while self.total_bodies > ceiling:
+                # Oldest first: newest debris is the debris being watched.
+                oldest = min(list(self.live) + list(self.frozen),
+                             key=lambda b: (b.spawn_time, b.spawn_step))
+                self._despawn(oldest)
+                gone += 1
+
+        return gone
+
+    def update(
+        self,
+        dt: float,
+        player_y: Optional[float] = None,
+        max_age: Optional[float] = None,
+    ) -> dict:
         """Retire settled and far-behind debris. Call once per frame.
+
+        Advances :attr:`clock` by *dt*, so debris age tracks simulated time.
+        Pass *max_age* to also reap by age; it is ``None`` (off) by default
+        because picking that number is the budget node's call, not this one's.
 
         Returns a small stats dict, which is what the headless demo prints.
         """
+        self.clock += float(dt)
         froze = 0
         for body in list(self.live):
             if self.settled(body):
@@ -751,6 +829,9 @@ class DebrisField:
                 body.quiet_time = 0.0
 
         gone = 0
+        if max_age is not None:
+            gone += self.reap(max_age=max_age)
+
         if player_y is not None:
             cutoff = float(player_y) - config.DEBRIS_DESPAWN_BEHIND
             # Frozen rubble the player has driven past: nothing will ever look
@@ -833,6 +914,9 @@ class DebrisField:
             "max_spin": max(spins) if spins else 0.0,
             "min_z": min((b.lowest_z() for b in self.live + self.frozen),
                          default=0.0),
+            "clock": self.clock,
+            "oldest_age": max((b.age(self.clock)
+                               for b in self.live + self.frozen), default=0.0),
         }
 
     def clear(self) -> None:
