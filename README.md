@@ -26,6 +26,7 @@ run, and launches the game. Later runs skip straight to launching.
 | Mouse          | look                            |
 | `Shift`        | sprint                          |
 | `Space`        | jump                            |
+| `F`            | demolish the nearest structure  |
 | `Esc`          | quit                            |
 
 You are on the ground with real gravity — no flying, no noclip. Forward is
@@ -34,8 +35,9 @@ deliberately the fastest direction: the course is meant to be driven down.
 ## Other commands
 
 ```
-./run.sh --headless     # boot the sim with no window, print state, exit
-./run.sh --test         # run the test suite
+./run.sh --headless              # boot the sim with no window, print state, exit
+./run.sh --headless --demolish   # same, but blow up each structure on approach
+./run.sh --test                  # run the test suite
 ```
 
 `--headless` is the useful one on a server with no display: it builds the
@@ -65,8 +67,12 @@ game/physics.py    Bullet world, fixed timestep, body authoring  (no render deps
 game/player.py     FPS capsule character + InputState             (no render deps)
 game/world.py      course authoring: ground plane + box towers    (no render deps)
 game/fracture.py   fracture generation library: spec -> convex chunks (pure data)
+game/structures.py destructible placement: static proxies + pre-generated chunks
+game/debris.py     runtime shatter + debris physics: chunks -> Bullet bodies
+game/render_debris.py the 1A glowing-wireframe treatment (render layer only)
 game/app.py        ShowBase host: visuals, lights, camera, input binding
 tools_fracture_report.py  headless per-archetype fracture summary table
+tools_debris_demo.py      headless shatter demo + stepping benchmark
 tests/             pytest suite, runs with no display
 ```
 
@@ -174,6 +180,117 @@ zero sampled interior overlap, full interior coverage, closed-manifold geometry
 with all three log-size bands populated, aspect-ratio spread, budget bounds,
 and per-structure generation time.
 
+## Runtime destruction
+
+`game/debris.py` is the layer between the pre-generated chunk descriptors and
+the live simulation. One public verb:
+
+```python
+from game.debris import DebrisField
+
+field = DebrisField(physics)
+event = field.shatter(structure, impact_point=(0, 40, 6), impulse=9e4)
+event = field.demolish(destructible)      # proxies out, debris in, one call
+...
+field.update(dt, player_y=player.pos[1])  # once per frame - this retires debris
+```
+
+Each chunk becomes an independent `BulletConvexHullShape` rigid body at its
+own local offset, with **mass derived from its volume** (so a 56 t slab and a
+0.4 t shard behave nothing alike), an outward impulse from the blast point
+with distance falloff, randomised direction spread and a random 3-axis spin.
+It then falls under real gravity, bounces, rolls and settles.
+
+`bodies_near()`, `contact_test()` and `body_for_node()` are the hooks the
+later damage node asked for; frozen rubble stays attached to the world, so
+ray tests and dynamic-body contacts still find it.
+
+**An intact structure is not 380 sleeping bodies.** `game/structures.py` gives
+each destructible a handful of static box proxies while it is standing, and
+`demolish()` removes them on the same frame its debris appears. Miss that and
+the player is walled off by a tower that has visibly collapsed — there is a
+test for exactly that.
+
+### The tuning, and how it was found
+
+Three findings that were measured on this stack, not guessed:
+
+1. **The collision margin has to scale with the chunk.** Bullet's default
+   convex margin is a flat 0.04 m. The fracture library tiles a structure's
+   volume *exactly*, so with a flat margin every chunk starts life ~8 cm
+   interpenetrated with each neighbour and the pile detonates on frame one.
+
+2. **Restitution is a product.** Bullet combines restitution
+   multiplicatively, so with the ground plane left at its default 0, *nothing
+   bounces* regardless of the debris setting — measured, a 9.4 m/s impact
+   rebounded at 0.46–0.48 m/s for every body restitution from 0.0 to 0.6,
+   i.e. pure penetration-recovery noise, completely decoupled from the knob.
+   `DebrisField.prepare_ground()` gives the ground a real restitution.
+
+3. **Glow cannot come from an over-bright colour.** `game/render_debris.py`
+   originally multiplied vertex colour by 1.85 and called that glow. Panda
+   *clamps* vertex colour and colour scale: the same chunk rendered at scale
+   1.0, 1.85 and 3.0 produced byte-identical frames (mean brightness 0.030404
+   for all three). The multiplier did nothing. The glow is now a thick dim
+   halo pass under a thin bright core pass, additively blended — which
+   measurably works: differenced against a baseline frame, the halo takes one
+   chunk's wireframe from 1119 to 2678 brightened pixels (2.39x) and 1.69x
+   total added light.
+
+### Settling is real physics
+
+Settled debris is frozen to mass-0 static geometry, which zeroes its
+velocity — so "everything has near-zero velocity and is asleep" would be
+trivially true even if the physics jittered forever. So
+`tests/test_settling_is_real.py` runs with **the freeze disabled** and
+requires pure Bullet to bring the pile to rest unaided. It does: a 150-chunk
+cluster collapse decays from ~10 m/s peak at t=2 s to exactly 0 m/s and
+0 rad/s with every body deactivated by t≈24 s, kinetic energy reaching 0 J
+with no body removed, everything resting above the ground plane.
+
+The freeze earns its keep on *promptness and cost*, not on rescuing divergent
+physics: it takes those ~20 s of a few hundred solver-resident bodies (which
+the next collapse would wake straight back up) down to zero solver cost.
+
+### Performance budget
+
+`DEBRIS_MAX_LIVE = 260` is a hard ceiling on dynamic debris bodies, never
+exceeded. A shatter that would blow it first freezes genuinely settled debris,
+then despawns the oldest, and only then declines to spawn a structure's
+smallest chunks — the budget goes to the biggest pieces, because losing a
+shard is invisible and losing the corner slab is not. Frozen rubble more than
+70 m behind the player is despawned outright.
+
+Measured on this machine (`tools_debris_demo.py --benchmark`):
+
+| scenario | bodies | per step | budget | real-time factor |
+|---|---|---|---|---|
+| full tower's debris | 260 | 2.96 ms | 8.33 ms | **2.81x** |
+| 3 simultaneous collapses | 260 (capped) | 2.81 ms | 8.33 ms | **2.97x** |
+| whole course, 5 structures in sequence | 260 (capped) | 2.93 ms | 8.33 ms | **2.85x** |
+
+Pre-generating all five placed structures (1440 chunks) costs ~228 ms, paid
+once at load. A shatter itself builds 240–260 bodies in 6–9 ms, so a
+demolition does not stall the frame it happens on.
+
+Watch it happen, phase by phase, with no display:
+
+```
+.venv/bin/python tools_debris_demo.py --structure cluster --seconds 15
+.venv/bin/python tools_debris_demo.py --benchmark
+```
+
+```
+         phase   t(s)  live  frozen  active         KE(J)   |v|max   |w|max     minZ
+        launch   0.00   240       0     240     6423025.0   28.218   18.475    0.000
+ first-impacts   1.00   237       3     237    12723408.6   11.028    5.510    0.007
+      tumbling   3.00   178      62     178      486053.4    6.139    4.469    0.014
+       rolling   6.00   128     112     128      264321.1    3.129    1.520    0.014
+      settling  10.00   124     116     124        3724.1    0.425    0.439    0.014
+       at-rest  15.00   122     118       0           0.0    0.000    0.000    0.014
+```
+
+
 ## Tests
 
 ```
@@ -193,6 +310,16 @@ down cleanly.
 ### Not verified automatically
 
 There is no vision check in this repo, so the following need a human eye:
-actual visual appearance, lighting and colour, mouse-look feel and
-sensitivity, and field-of-view comfort. The geometry is placeholder grey
-boxes by design at this stage.
+
+- **Whether the 1A glowing wireframe actually looks good.** The tests prove
+  the geometry is drawn, carries additive/unlit/no-depth-write state, and
+  measurably brightens real rendered frames. Line thickness, palette, halo
+  strength and whether a 240-piece collapse reads as spectacular or as visual
+  noise are Rick's call at playtest.
+- **Whether a collapse *feels* right** — impulse strength, how far debris
+  flies, how long it tumbles before settling. The physics is correct and
+  convergent; "satisfying" is a judgement.
+- Mouse-look feel and sensitivity, field-of-view comfort, and the rubble
+  pile's readability as cover or as an obstacle (a settled cluster collapse
+  leaves ~43 chunks above 1 m inside the lane).
+- The non-debris course geometry is still placeholder grey boxes by design.
