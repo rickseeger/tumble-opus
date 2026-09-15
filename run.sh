@@ -6,7 +6,8 @@
 #   ./run.sh --headless   no-window smoke run (servers, CI)
 #   ./run.sh --test       run the pytest suite headlessly
 #   ./run.sh --soak       sustained-demolition soak (load + leak harness)
-#   ./run.sh --soak-driver  headless instrumentation driver (per-frame metrics, no asserts)
+#   ./run.sh --soak-driver  headless instrumentation driver (bounded, checkpointed)
+#   ./run.sh --soak-status DIR   read back a soak from any session
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -33,6 +34,13 @@ if [ ! -f "$STAMP" ]; then
   "$PY" -m pip install --quiet --upgrade pip
   "$PY" -m pip install --quiet -r requirements.txt
   touch "$STAMP"
+fi
+
+if [ "${1:-}" = "--soak-status" ]; then
+  shift
+  # Read-only: never starts a run. See README "Bounded, checkpointed,
+  # detachable soaks".
+  exec "$PY" tools/soak_driver.py --status "$@"
 fi
 
 if [ "${1:-}" = "--soak-driver" ]; then

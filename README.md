@@ -77,7 +77,8 @@ game/app.py        ShowBase host: visuals, lights, camera, input binding
 tools_fracture_report.py  headless per-archetype fracture summary table
 tools_debris_demo.py      headless shatter demo + stepping benchmark
 tools_soak.py             headless sustained-demolition soak: load + leak harness
-tools/soak_driver.py      headless soak DRIVER: per-frame instrumentation, no assertions
+tools/soak_driver.py      headless soak DRIVER: bounded, checkpointed, detachable
+tools/soak_launch.sh      launch a detached soak that outlives your shell
 tests/             pytest suite, runs with no display
 ```
 
@@ -538,6 +539,106 @@ peaking at exactly the cap of 260 and never above it, frame time mean 4.91 ms
 / p95 6.66 ms / max 16.56 ms, RSS 100.3 → 123.0 MB. Those are observations,
 not bounds — the driver does not judge them, and tuning is somebody else's
 node.
+
+### Bounded, checkpointed, detachable soaks
+
+The driver above measures well but, as first written, it offered no guarantee
+that a run would ever *stop*, and it left nothing behind if it was killed. So
+the only way to run a long soak was for a session to start it and sit there —
+and that is exactly how two worker sessions were lost to their timeouts. A
+soak must be structurally incapable of blocking anybody. Three properties,
+and they are the contract for every long run from here on.
+
+**1. It bounds itself.** `--max-seconds S` (wall clock), `--max-frames N`,
+`--max-demolitions N` — whichever trips first ends the run cleanly. A
+wall-clock bound is *always* in force (default 60 s); `--max-seconds 0` is
+refused. The bounds are checked *before* each frame, so `--max-frames K`
+steps at most K frames, never K+1.
+
+Behind them sits a two-stage watchdog thread. At `--max-seconds` it asks the
+loop to stop, which is the path that actually happens. At `--max-seconds +
+--watchdog-grace` it assumes the process is wedged — a frame stuck in Bullet,
+a write blocked on a dead mount — and terminates it outright with exit code
+**75**. A cooperative flag cannot stop a stuck frame; that second stage is why
+"it will probably finish" is not a bound.
+
+**2. It checkpoints as it goes.** `--results-dir DIR` is the one flag that
+sets up everything: `DIR/metrics.jsonl`, `DIR/summary.json`, `DIR/soak.log`,
+`DIR/soak.pid`. Every `--sample-every N` frames (and at least every
+`--sample-seconds S`) one JSON object is appended to the JSONL **and
+flushed** — frame, ISO + unix timestamp, elapsed and simulated seconds, live
+debris and its peak, cumulative spawned / culled / frozen / despawned /
+evicted, structures placed and destroyed, frame time with running
+mean/p95/max, RSS and peak RSS, and the PID. Flushing per record is the whole
+point: a run killed by a signal, the OOM killer, or the machine going away
+still leaves a file that parses line for line up to the moment it died.
+
+On clean exit — and best effort on SIGTERM/SIGINT, and on watchdog kill — a
+terminal `{"record": "final", ...}` line is written carrying the stop reason.
+Its presence is how a later session tells *finished* from *killed hard*
+without ever having been attached.
+
+Note on the aggregates: `mean` and `max` are exact over every frame, but the
+percentiles are taken over a rolling `--stats-window` (default 3600 frames).
+Each record says which it is via `frame_ms_p95_exact`. The earlier driver kept
+every frame time in a list, which over a multi-hour run is a slow leak *inside
+the instrument measuring for leaks*.
+
+**3. It detaches.** `--detach` re-execs the driver in its own session
+(`setsid`), pipes stdout/stderr into `DIR/soak.log`, writes `DIR/soak.pid`,
+prints the PID and every path, and returns immediately — measured at **0.07 s**
+to launch a 60-second soak. Losing the calling shell, the SSH connection, or
+the session that started it does not kill the run. `tools/soak_launch.sh` is
+the same thing spelled out as plain `setsid nohup ... &` for anyone who
+wants the incantation written down.
+
+**Reading a run back, from any session that never touched it:**
+
+```
+.venv/bin/python tools/soak_driver.py --status soak_runs/long   # poll it
+.venv/bin/python tools/soak_driver.py --status soak_runs/long --status-json
+.venv/bin/python tools/soak_driver.py --stop   soak_runs/long   # ask it to stop
+```
+
+`--status` reads the checkpoint file plus PID liveness and reports
+`running` / `finished` / `killed` / `unknown`, with progress, live and peak
+debris, spawned and culled totals, frame-time stats and RSS. It never starts a
+run, so it is safe to call at any time. `--stop` sends SIGTERM, which the
+driver catches and turns into a clean stop with a flushed terminal record — it
+does not longjmp out of a physics step, which is how you get a corrupt tail
+instead of a clean one.
+
+**A long soak, launched and walked away from:**
+
+```
+.venv/bin/python tools/soak_driver.py --detach --results-dir soak_runs/long \
+    --max-seconds 3600 --max-frames 400000 --destroy-every 120 \
+    --sample-every 120 --out -
+```
+
+**A short smoke run in the foreground** (this one exits on its own in ~3 s):
+
+```
+.venv/bin/python tools/soak_driver.py --results-dir soak_runs/smoke \
+    --max-frames 600 --max-seconds 45 --destroy-every 90 \
+    --sample-every 100 --out -
+```
+
+**Verified here.** The foreground smoke run stopped itself at exactly 600
+frames and wrote 7 records (6 samples + terminal). A detached 60 s run
+returned the prompt in 0.07 s, was polled twice from separate invocations
+(frame 2001 → frame 10123), stopped itself on `max-seconds` at 59.9 s, and
+wrote 52 records plus a summary. A third run was SIGKILLed mid-flight: no
+terminal record, as there cannot be, but all 31 samples parsed and carried
+every required key, and `--status` correctly called it `killed`.
+`tests/test_soak_driver_harness.py` covers all of it in 19 tests that run in
+about 4 seconds, including the watchdog escalation — driven by an injected
+clock, so a 30-second escalation is exercised in microseconds.
+
+*What is deliberately not claimed here: nothing about whether debris stays
+bounded over a long run. This is the harness. The judging is a separate
+concern with its own evidence.*
+
 
 ## Damage and the destruction trigger
 

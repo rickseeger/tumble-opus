@@ -2,3 +2,6 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# Soak run artefacts: metrics, logs, PID files. Evidence, not source.
+soak_runs/
