@@ -211,8 +211,11 @@ class TumbleApp(ShowBase):
         # Retire settled and far-behind debris. Skipping this is how the
         # body budget gets eaten: the debris itself would simulate forever,
         # quite correctly, and never leave.
+        # The full player position, not just Y: the debris budget's eviction
+        # protection is a radius around the player, so it needs all three
+        # components to know what is near enough to be off-limits.
         self.debris.update(steps * self.physics.fixed_dt,
-                           player_y=self.player.pos[1])
+                           player_pos=self.player.pos)
         self.player.sync_camera()
         self.frames_run += 1
         return steps

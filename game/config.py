@@ -112,6 +112,24 @@ DEBRIS_MAX_FROZEN = 900
 #: Frozen debris this far *behind* the player (in -Y) is despawned outright.
 DEBRIS_DESPAWN_BEHIND = 70.0
 
+#: --- explicit debris budgeting (node 15) ---------------------------------
+#: THE cap. :data:`DEBRIS_MAX_LIVE` above is the single global ceiling on
+#: simultaneously *simulated* (dynamic, stepping) debris bodies, and it is
+#: defined in exactly one place: right here. `DebrisField.max_live` defaults
+#: to it, `DebrisField.stepped_count()` is what it bounds, and nothing in
+#: `game/debris.py` hard-codes a number of its own.
+#:
+#: Protection radius for eviction. Debris within this horizontal distance of
+#: the player is a gameplay object, not rubble: if it is still in flight, or
+#: it is in front of the player where it can be seen, it is NEVER despawned
+#: to make room. A shatter that cannot find an unprotected victim declines to
+#: spawn its smallest chunks instead - the cap stays honest, and nothing pops
+#: out of existence in the player's view.
+DEBRIS_PROTECT_RADIUS = 30.0
+#: Debris below this world Z has fallen out of the world (off the edge of the
+#: ground plane, through a gap) and can never be seen again. Despawned.
+DEBRIS_WORLD_FLOOR_Z = -40.0
+
 #: Launch shaping. The blast is modelled as an impulse (N*s) that falls off
 #: with distance from the impact point; the resulting speed is v = J/m, then
 #: clamped, then jittered.

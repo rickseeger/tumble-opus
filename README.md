@@ -280,14 +280,65 @@ is reproducible in a test. `update(dt, max_age=...)` runs the age pass inline.
 the bodies are genuinely detached from the Bullet world rather than merely
 dropped from a list.
 
-### Performance budget
+### Debris budgeting
 
-`DEBRIS_MAX_LIVE = 260` is a hard ceiling on dynamic debris bodies, never
-exceeded. A shatter that would blow it first freezes genuinely settled debris,
-then despawns the oldest, and only then declines to spawn a structure's
-smallest chunks — the budget goes to the biggest pieces, because losing a
-shard is invisible and losing the corner slab is not. Frozen rubble more than
-70 m behind the player is despawned outright.
+Sustained demolition must not be able to degrade the game, so the number of
+debris bodies the solver is asked to step is explicitly bounded. Four
+mechanisms, all in `game/debris.py`, all configured in `game/config.py`:
+
+**1. One cap, in one place.** `config.DEBRIS_MAX_LIVE = 260` is *the* global
+ceiling on simultaneously simulated (dynamic, stepping) debris bodies.
+`DebrisField.max_live` defaults to it and nothing in `debris.py` hard-codes a
+number of its own. `field.stepped_count()` is the quantity it bounds, and it
+is checked *before* anything is attached to the Bullet world, so the cap is
+never transiently exceeded and then cleaned up — it is simply never exceeded.
+
+**2. Settle-freeze.** A body whose linear speed stays under
+`DEBRIS_SETTLE_LINEAR` **and** whose spin stays under
+`DEBRIS_SETTLE_ANGULAR` for `DEBRIS_SETTLE_TIME` of sustained dwell — and
+which is actually supported, not merely slow at the apex of its arc — is
+frozen: mass goes to 0 and it becomes static geometry. Still there, still
+visible as rubble, still collidable, costing the solver nothing. Any
+disturbance resets the dwell timer, so the window is a real requirement.
+
+**3. Eviction, when the cap is hit.** The policy is deterministic and is
+exposed as directly callable, read-only methods so it can be asserted exactly:
+
+```python
+field.eviction_protected(body)   # may this body NEVER be evicted?
+field.eviction_rank(body)        # sort key; best candidate sorts first
+field.eviction_candidates()      # evictable bodies, best first (no mutation)
+field.evict_for_budget(n)        # despawn up to n, by that order
+```
+
+Preference order, least interesting first: settled/frozen before anything
+still moving, then farther behind the player before nearer, then older before
+newer, then name — so the choice is total and reproducible.
+
+Against that sits a hard protection rule. Within
+`DEBRIS_PROTECT_RADIUS = 30 m` of the player, a body is off-limits if it is
+**in flight** (that chunk arcing toward the player is the gameplay threat —
+deleting it mid-air is a lie) or if it is **in front of** the player (visible,
+so removing it would pop geometry out of the view they are pointed at). If
+every remaining body is protected, the field spawns *less* rather than
+breaking protection: the new shatter's smallest chunks are declined and its
+`skipped_for_budget` says so. The budget goes to the biggest pieces, because
+losing a shard is invisible and losing the corner slab is not.
+
+**4. Despawn.** Two ways out of the world entirely, both run every
+`update()`: below `DEBRIS_WORLD_FLOOR_Z = -40 m` (fallen off the edge of the
+ground or through a gap — unreachable and unseeable), and more than
+`DEBRIS_DESPAWN_BEHIND = 70 m` behind the player. That 70 m is deliberately
+larger than the 30 m protection radius, which is what guarantees the
+behind-player sweep can never remove something still in view.
+`update(dt, player_pos=...)` feeds the field the full player position, since
+the protection rule is a radius and needs all three components.
+
+`tests/test_debris_budget.py` covers all four: 24 assertions on a real
+headless Bullet world, in under a second. No frame-rate claim is made there —
+throughput is measured separately, below.
+
+### Performance budget
 
 Measured on this machine (`tools_debris_demo.py --benchmark`):
 
@@ -401,6 +452,22 @@ exception. Run just that file with:
 
 ```
 ./run.sh --test tests/test_damage_destruction.py
+```
+
+`tests/test_debris_budget.py` covers the debris budget (see **Debris
+budgeting** above): that four full towers thrown at a 30-body cap leave the
+stepped count at or below it at every instant, that `stepped_count()` counts
+dynamic bodies and not frozen rubble, that a body held below both velocity
+thresholds for the dwell window transitions to frozen and genuinely stops
+being advanced by the solver, that spin alone keeps it awake and any
+disturbance resets the timer, that eviction picks settled/far/old debris and
+refuses to touch an in-flight or in-view body near the player — spawning less
+instead — and that debris below the world floor or far behind the player is
+detached from the Bullet world rather than merely dropped from a list. It runs
+in well under a second:
+
+```
+./run.sh --test tests/test_debris_budget.py
 ```
 
 ### Not verified automatically

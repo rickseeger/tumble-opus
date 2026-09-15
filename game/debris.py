@@ -330,6 +330,15 @@ class DebrisField:
         #: :meth:`update`. Debris age is measured against it, so age-based
         #: reaping is independent of wall clock and of frame rate.
         self.clock = 0.0
+        #: Last known player position, set by :meth:`set_player` (which
+        #: :meth:`update` calls for you). The budget needs it: eviction is
+        #: only allowed to take debris the player is not looking at.
+        self._player_pos: Optional[Vec3] = None
+        #: Counts of what the budget has actually done, for the tests and the
+        #: demo to assert on.
+        self.total_evicted = 0
+        self.total_floor_despawned = 0
+        self.total_behind_despawned = 0
 
         # Give the ground a real restitution, otherwise Bullet's
         # multiplicative combine means debris cannot bounce at all. Measured:
@@ -372,6 +381,20 @@ class DebrisField:
 
     def active_count(self) -> int:
         return sum(1 for b in self.live if b.is_active())
+
+    @staticmethod
+    def is_stepped(body: "DebrisBody") -> bool:
+        """True when the solver is still doing work for this body.
+
+        This is the quantity :data:`config.DEBRIS_MAX_LIVE` bounds. A frozen
+        body is mass-0 static geometry - present, visible, collidable, and
+        *not* stepped.
+        """
+        return body.state is LIVE
+
+    def stepped_count(self) -> int:
+        """Number of debris bodies currently in the dynamic simulation."""
+        return sum(1 for b in self.live if self.is_stepped(b))
 
     # ------------------------------------------------------------- tuning
     @staticmethod
@@ -668,6 +691,180 @@ class DebrisField:
             return False
         return body.grounded(self._ground_z()) or not bool(body.node.isActive())
 
+    # ---------------------------------------------------- player awareness
+    def set_player(
+        self,
+        pos: Optional[Triple] = None,
+        y: Optional[float] = None,
+    ) -> Optional[Vec3]:
+        """Tell the field where the player is. Returns the stored position.
+
+        Either a full ``(x, y, z)`` or just *y*. The course is a corridor run
+        down +Y, so when only *y* is known the previously-known x/z (or the
+        centreline) stands in for the rest - good enough for the only thing
+        this is used for, which is deciding whether debris is near enough and
+        far enough forward to be off-limits to eviction.
+        """
+        if pos is not None:
+            self._player_pos = _vec3(pos)
+        elif y is not None:
+            old = self._player_pos
+            self._player_pos = Vec3(
+                float(old.getX()) if old is not None else 0.0,
+                float(y),
+                float(old.getZ()) if old is not None else 0.0,
+            )
+        return self._player_pos
+
+    @property
+    def player_pos(self) -> Optional[Vec3]:
+        return self._player_pos
+
+    @property
+    def player_y(self) -> Optional[float]:
+        return None if self._player_pos is None else float(self._player_pos.getY())
+
+    def player_distance(self, body: DebrisBody) -> Optional[float]:
+        """Horizontal (XY) distance player -> body, or None if unknown.
+
+        Horizontal on purpose: a slab 20 m up and 2 m away is very much the
+        player's problem, and a vertical term would rank it as distant.
+        """
+        if self._player_pos is None:
+            return None
+        d = body.np.getPos() - self._player_pos
+        return math.hypot(float(d.getX()), float(d.getY()))
+
+    def behind_distance(self, body: DebrisBody) -> float:
+        """How far *behind* the player this body is, in metres (+Y forward).
+
+        Negative means it is in front of the player. 0.0 when the player
+        position is unknown, which makes the eviction order fall back to pure
+        age rather than inventing a geometry it does not have.
+        """
+        if self._player_pos is None:
+            return 0.0
+        return float(self._player_pos.getY()) - float(body.np.getY())
+
+    def in_flight(self, body: DebrisBody) -> bool:
+        """Still moving under its own momentum: the gameplay threat."""
+        return body.state is LIVE and not body.at_rest()
+
+    # ------------------------------------------------------------ eviction
+    def eviction_protected(self, body: DebrisBody) -> bool:
+        """True when this body must NEVER be evicted to free budget.
+
+        Two ways to earn protection, both within
+        :data:`config.DEBRIS_PROTECT_RADIUS` of the player:
+
+        * it is **in flight** - that is the chunk arcing toward the player,
+          the whole point of the destruction; deleting it mid-air is a lie;
+        * it is **in front of** the player - visible, so removing it would
+          pop geometry out of the view the player is pointed at.
+
+        Rubble settled behind the player, or anything at all beyond the
+        protection radius, is fair game.
+        """
+        if body.state is DESPAWNED:
+            return False
+        dist = self.player_distance(body)
+        if dist is None or dist > config.DEBRIS_PROTECT_RADIUS:
+            return False
+        if self.in_flight(body):
+            return True
+        return self.behind_distance(body) < 0.0
+
+    def eviction_rank(self, body: DebrisBody) -> Tuple:
+        """Deterministic sort key: the *best* eviction candidate sorts first.
+
+        Order of preference, least interesting first:
+
+        1. settled/frozen before anything still moving;
+        2. farther behind the player before nearer;
+        3. older before newer;
+        4. name, so the choice is total and reproducible.
+        """
+        moving = 0 if (body.state is FROZEN or not self.in_flight(body)) else 1
+        return (
+            moving,
+            -self.behind_distance(body),
+            body.spawn_time,
+            body.spawn_step,
+            body.name,
+        )
+
+    def eviction_candidates(
+        self,
+        pool: Optional[Iterable[DebrisBody]] = None,
+    ) -> List[DebrisBody]:
+        """Evictable bodies, best candidate first. Protected ones excluded.
+
+        Pure with respect to the field: it reads state and returns an order,
+        it never removes anything. That is what lets a test assert the policy
+        without a window and without stepping a world.
+        """
+        bodies = list(self.live) if pool is None else list(pool)
+        return sorted(
+            (b for b in bodies
+             if b.state is not DESPAWNED and not self.eviction_protected(b)),
+            key=self.eviction_rank,
+        )
+
+    def evict_for_budget(self, needed: int) -> int:
+        """Despawn up to *needed* live bodies, least interesting first.
+
+        Returns how many were actually evicted, which can be fewer than
+        *needed* if everything left is protected. The caller's job is then to
+        spawn less - not to break protection.
+        """
+        gone = 0
+        for body in self.eviction_candidates():
+            if gone >= int(needed):
+                break
+            self._despawn(body)
+            self.total_evicted += 1
+            gone += 1
+        return gone
+
+    def despawn_out_of_world(
+        self,
+        floor_z: Optional[float] = None,
+    ) -> int:
+        """Despawn debris that has fallen out of the world. Returns the count."""
+        limit = (config.DEBRIS_WORLD_FLOOR_Z if floor_z is None
+                 else float(floor_z))
+        gone = 0
+        for body in list(self.live) + list(self.frozen):
+            if float(body.np.getZ()) < limit:
+                self._despawn(body)
+                self.total_floor_despawned += 1
+                gone += 1
+        return gone
+
+    def despawn_behind_player(
+        self,
+        player_y: Optional[float] = None,
+        behind: Optional[float] = None,
+    ) -> int:
+        """Despawn debris the player has driven far enough past. Count out.
+
+        Uses :data:`config.DEBRIS_DESPAWN_BEHIND`, which is well past the
+        protection radius, so this can never remove something in view.
+        """
+        if player_y is None:
+            player_y = self.player_y
+        if player_y is None:
+            return 0
+        cutoff = float(player_y) - (config.DEBRIS_DESPAWN_BEHIND
+                                    if behind is None else float(behind))
+        gone = 0
+        for body in list(self.live) + list(self.frozen):
+            if float(body.np.getY()) < cutoff:
+                self._despawn(body)
+                self.total_behind_despawned += 1
+                gone += 1
+        return gone
+
     # -------------------------------------------------------------- budget
     def _make_room(self, wanted: int) -> Tuple[int, int, int]:
         """Free capacity for up to *wanted* new live bodies.
@@ -692,17 +889,20 @@ class DebrisField:
                 self._freeze(body)
                 froze += 1
 
-        # 2. Still over budget? Despawn the OLDEST live debris - rubble from
-        #    a structure the player already drove past. Deliberately not
-        #    "freeze the calmest": a chunk at the apex of its arc is slow too,
-        #    and freezing that would hang a slab in mid-air. Removing it is
-        #    honest; pinning it in the sky is not.
-        if len(self.live) + wanted > self.max_live:
-            for body in sorted(self.live, key=lambda b: b.spawn_step):
-                if len(self.live) + wanted <= self.max_live:
-                    break
-                self._despawn(body)
-                gone += 1
+        # 2. Still over budget? Evict, by the policy in
+        #    :meth:`eviction_rank`: settled before moving, farthest behind
+        #    the player before nearest, oldest before newest - and never a
+        #    body :meth:`eviction_protected` covers (in flight near the
+        #    player, or anywhere in front of them within the protection
+        #    radius). Deliberately not "freeze the calmest": a chunk at the
+        #    apex of its arc is slow too, and freezing that would hang a slab
+        #    in mid-air. Removing rubble behind the player is honest; pinning
+        #    a slab in the sky, or vanishing one from the player's view, is
+        #    not. If every remaining body is protected we evict nothing and
+        #    `room` simply comes back smaller.
+        over = (len(self.live) + wanted) - self.max_live
+        if over > 0:
+            gone += self.evict_for_budget(over)
 
         # 3. Keep the frozen pile bounded too, oldest out first.
         while len(self.frozen) > self.max_frozen:
@@ -808,6 +1008,7 @@ class DebrisField:
         dt: float,
         player_y: Optional[float] = None,
         max_age: Optional[float] = None,
+        player_pos: Optional[Triple] = None,
     ) -> dict:
         """Retire settled and far-behind debris. Call once per frame.
 
@@ -818,6 +1019,8 @@ class DebrisField:
         Returns a small stats dict, which is what the headless demo prints.
         """
         self.clock += float(dt)
+        if player_pos is not None or player_y is not None:
+            self.set_player(pos=player_pos, y=player_y)
         froze = 0
         for body in list(self.live):
             if self.settled(body):
@@ -832,20 +1035,15 @@ class DebrisField:
         if max_age is not None:
             gone += self.reap(max_age=max_age)
 
-        if player_y is not None:
-            cutoff = float(player_y) - config.DEBRIS_DESPAWN_BEHIND
-            # Frozen rubble the player has driven past: nothing will ever look
-            # at it again, so give the memory back.
-            for body in list(self.frozen):
-                if float(body.np.getY()) < cutoff:
-                    self._despawn(body)
-                    gone += 1
-            # Live debris that far behind is still burning solver time for a
-            # show nobody is watching. Retire it too.
-            for body in list(self.live):
-                if float(body.np.getY()) < cutoff:
-                    self._despawn(body)
-                    gone += 1
+        # Fallen out of the world entirely: off the edge of the ground, or
+        # through a gap. Unreachable and unseeable, so it goes. Checked before
+        # the behind-player sweep because a body can be both.
+        gone += self.despawn_out_of_world()
+
+        # Driven past by DEBRIS_DESPAWN_BEHIND metres - frozen rubble nothing
+        # will look at again, and live debris still burning solver time for a
+        # show nobody is watching. Both retired.
+        gone += self.despawn_behind_player()
 
         while len(self.frozen) > self.max_frozen:
             self._despawn(self.frozen[0])
@@ -917,6 +1115,12 @@ class DebrisField:
             "clock": self.clock,
             "oldest_age": max((b.age(self.clock)
                                for b in self.live + self.frozen), default=0.0),
+            # The budget, and what enforcing it has cost so far.
+            "stepped": self.stepped_count(),
+            "max_live": self.max_live,
+            "evicted": self.total_evicted,
+            "floor_despawned": self.total_floor_despawned,
+            "behind_despawned": self.total_behind_despawned,
         }
 
     def clear(self) -> None:
