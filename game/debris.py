@@ -466,6 +466,50 @@ class DebrisField:
         self.events.append(event)
         return event
 
+    def demolish(
+        self,
+        destructible,
+        impact_point: Optional[Triple] = None,
+        impulse: float = config.DEBRIS_IMPULSE,
+        seed: Optional[int] = None,
+    ) -> Optional[ShatterEvent]:
+        """Stop a placed structure being a building and start it being debris.
+
+        This is the verb the weapon/damage node and the campaign node call on
+        a :class:`game.structures.Destructible`. It does the two things that
+        must happen on the same frame:
+
+        1. Removes the structure's **static collision proxies** from the
+           world. Miss this and the player is walled off by a tower that has
+           visibly collapsed.
+        2. Shatters its pre-generated chunk set into live debris at the
+           structure's world origin.
+
+        Returns the :class:`ShatterEvent`, or ``None`` if it was already down
+        (demolishing twice is a no-op, not an error - a damage node will
+        happily land two hits on the same frame).
+        """
+        if not getattr(destructible, "intact", False):
+            return None
+
+        for name in getattr(destructible, "proxy_names", ()):  # 1.
+            self.physics.remove_body(name)
+        destructible.intact = False
+        destructible.demolished_step = int(
+            getattr(self.physics, "step_count", 0)
+        )
+
+        point = (impact_point if impact_point is not None
+                 else destructible.default_impact_point())
+        event = self.shatter(                                   # 2.
+            destructible.result,
+            impact_point=point,
+            impulse=impulse,
+            origin=destructible.origin,
+            seed=seed,
+        )
+        return event
+
     def _spawn_chunk(
         self,
         chunk: Chunk,
@@ -769,7 +813,10 @@ class DebrisField:
             "despawned": self.total_despawned,
             "spawned": self.total_spawned,
             "active": self.active_count(),
-            "asleep": sum(1 for b in self.live if b.is_asleep()),
+            # Counts live AND frozen: with everything settled, `live` is 0,
+            # and an `asleep` that only looked at `live` would report 0 too -
+            # which reads exactly like "nothing is asleep".
+            "asleep": sum(1 for b in self.live + self.frozen if b.is_asleep()),
             "kinetic_energy": self.kinetic_energy(),
             "max_speed": max(speeds) if speeds else 0.0,
             "max_spin": max(spins) if spins else 0.0,

@@ -21,7 +21,8 @@ from panda3d.core import (
     WindowProperties,
 )
 
-from . import config
+from . import config, structures
+from .debris import DebrisField
 from .physics import PhysicsWorld
 from .player import InputState, Player
 from .world import build_course
@@ -50,20 +51,31 @@ class TumbleApp(ShowBase):
         # ---- sim (identical in both modes) --------------------------------
         self.physics = PhysicsWorld()
         build_course(self.physics)
+
+        # Destructibles are fractured ONCE, here at load time (~220 ms for
+        # all four archetypes, measured) - never on the frame one comes down.
+        self.destructibles = structures.build_destructibles(self.physics)
+        self.debris = DebrisField(self.physics)
+
         self.player = Player(self.physics)
         self.input_state = InputState()
 
         self.frames_run = 0
         self.mouse_centered = False
+        self.demolitions = 0
 
         # ---- render (guarded) --------------------------------------------
         if not self.headless:
             self.physics.root.reparentTo(self.render)
             self._build_visuals()
+            self._build_destructible_visuals()
             self._setup_lights()
             self._setup_camera()
             self._bind_keys()
             self.accept("escape", self.user_exit)
+            # Placeholder trigger until the weapon node lands: blow up the
+            # nearest structure still standing.
+            self.accept("f", self.demolish_nearest)
 
         self.taskMgr.add(self._update, "tumble-update")
 
@@ -91,7 +103,29 @@ class TumbleApp(ShowBase):
         ground.setZ(0.01)
         ground.setColor(0.22, 0.26, 0.22, 1.0)
 
-        self.setBackgroundColor(0.35, 0.45, 0.58, 1.0)
+        # Locked 1A: black void. Everything readable is edge-lit.
+        self.setBackgroundColor(0.0, 0.0, 0.0, 1.0)
+
+    def _build_destructible_visuals(self) -> None:
+        """Intact structures as neon silhouettes (locked 1A treatment)."""
+        from .render_debris import make_structure_wireframe
+
+        self._structure_visuals = {}
+        for d in self.destructibles:
+            wire = make_structure_wireframe(d)
+            wire.reparentTo(self.render)
+            self._structure_visuals[d.name] = wire
+
+    def _swap_to_debris_visuals(self, destructible, event) -> None:
+        """Silhouette off, glowing chunk outlines on."""
+        from .render_debris import attach_debris_visuals
+
+        wire = getattr(self, "_structure_visuals", {}).pop(
+            destructible.name, None
+        )
+        if wire is not None and not wire.isEmpty():
+            wire.removeNode()
+        attach_debris_visuals(event.bodies)
 
     def _setup_lights(self) -> None:
         amb = AmbientLight("ambient")
@@ -158,9 +192,39 @@ class TumbleApp(ShowBase):
         self.player.apply_input(self.input_state)
         self.input_state.clear_mouse()
         steps = self.physics.advance(dt)
+        # Retire settled and far-behind debris. Skipping this is how the
+        # body budget gets eaten: the debris itself would simulate forever,
+        # quite correctly, and never leave.
+        self.debris.update(steps * self.physics.fixed_dt,
+                           player_y=self.player.pos[1])
         self.player.sync_camera()
         self.frames_run += 1
         return steps
+
+    # --------------------------------------------------------- destruction
+    def demolish(self, destructible, impact_point=None,
+                 impulse: float = config.DEBRIS_IMPULSE):
+        """Bring one structure down: proxies out, debris in, visuals swapped.
+
+        The single call the weapon/damage node and the campaign node make.
+        Returns the ShatterEvent, or None if it was already rubble.
+        """
+        event = self.debris.demolish(
+            destructible, impact_point=impact_point, impulse=impulse
+        )
+        if event is None:
+            return None
+        self.demolitions += 1
+        if not self.headless:
+            self._swap_to_debris_visuals(destructible, event)
+        return event
+
+    def demolish_nearest(self, impulse: float = config.DEBRIS_IMPULSE):
+        """Demolish whichever structure is still standing and closest."""
+        target = structures.nearest_intact(self.destructibles, self.player.pos)
+        if target is None:
+            return None
+        return self.demolish(target, impulse=impulse)
 
 
 def run(headless: bool = False) -> TumbleApp:

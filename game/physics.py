@@ -170,6 +170,25 @@ class PhysicsWorld:
         """Un-simulated remainder currently held in the accumulator."""
         return self._accumulator
 
+    # ------------------------------------------------------------- teardown
+    def remove_body(self, name: str) -> bool:
+        """Detach a body from the world and the scene graph.
+
+        Used when a destructible stops being a building: its static collision
+        proxy has to leave the world on the same frame its debris arrives, or
+        the player is blocked by a tower that visibly no longer exists.
+        Returns False if there was no such body.
+        """
+        np_ = self.bodies.pop(name, None)
+        if np_ is None:
+            return False
+        self.world.removeRigidBody(np_.node())
+        np_.removeNode()
+        self.box_specs = [s for s in self.box_specs if s.name != name]
+        if self.ground_np is not None and name == "ground":
+            self.ground_np = None
+        return True
+
     def body(self, name: str) -> NodePath:
         return self.bodies[name]
 
