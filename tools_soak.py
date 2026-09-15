@@ -83,15 +83,25 @@ ACTIVE_BASELINE_MAX = 4
 #: real leak is linear in cycles, so a run of 40+ structures blows any fixed
 #: allowance, while a bounded system plateaus and passes at any length.
 #:
-#: Calibration, measured on this stack (40 structures, ~5800 bodies spawned):
-#: three separate real leaks had to be fixed to get under this - Panda's
-#: interned TransformState table (+266 MB), the unbounded ShatterEvent history
-#: pinning every body ever spawned (+20 MB/cycle), and retained fracture
-#: descriptors (+1.22 MB/structure). With those fixed the same run settles at
-#: +17 MB and a 100-structure run at +21 MB, i.e. it plateaus. 45 MB leaves
-#: room for allocator noise while still failing loudly if any of the three
-#: regress: the smallest of them alone would put a 40-structure run at +49 MB.
-RSS_GROWTH_MAX_MB = 45.0
+#: Calibration, measured on this stack. Four separate real leaks had to be
+#: fixed to get under this:
+#:
+#: | leak | cost | fix |
+#: |---|---|---|
+#: | Panda's interned TransformState table, never collected headless | +266 MB over 14 structures, still rising | :func:`game.physics.reclaim_interned_states` |
+#: | unbounded ShatterEvent history, which pins its bodies | +20 MB/cycle | :data:`config.DEBRIS_EVENT_HISTORY` |
+#: | retained fracture descriptors on spent structures | +1.22 MB/structure | :meth:`game.structures.Destructible.release_chunks` |
+#: | despawned bodies keeping their Bullet node, shape and chunk alive via the history | +1.08 MB/structure, plateau ratio 0.99 | :meth:`game.debris.DebrisBody.release` |
+#:
+#: With all four fixed, measured: 12 structures settle at +10.2 MB and 60
+#: structures at +10.6 MB - i.e. flat in the number of structures, which is
+#: the actual proof of no leak. 25 MB is that plateau with room for allocator
+#: noise, and still fails loudly on a regression: the *smallest* of the four
+#: alone would put a 60-structure run at +65 MB.
+#:
+#: This absolute figure is only a backstop. :data:`RSS_PLATEAU_RATIO_MAX` is
+#: the bound that does not care how long the run is.
+RSS_GROWTH_MAX_MB = 25.0
 
 #: The live-body count must not trend upward across cycles. Compared as the
 #: mean of the last third of per-cycle peaks against the first third; the cap

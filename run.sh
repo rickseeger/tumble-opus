@@ -5,6 +5,7 @@
 #   ./run.sh              windowed playtest
 #   ./run.sh --headless   no-window smoke run (servers, CI)
 #   ./run.sh --test       run the pytest suite headlessly
+#   ./run.sh --soak       sustained-demolition soak (load + leak harness)
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -31,6 +32,16 @@ if [ ! -f "$STAMP" ]; then
   "$PY" -m pip install --quiet --upgrade pip
   "$PY" -m pip install --quiet -r requirements.txt
   touch "$STAMP"
+fi
+
+if [ "${1:-}" = "--soak" ]; then
+  shift
+  # The sustained-demolition soak. Defaults to the short CI shape (~8 s);
+  # pass --structures N / --settle-seconds S for a longer run.
+  if [ "$#" -eq 0 ]; then
+    exec "$PY" tools_soak.py --ci
+  fi
+  exec "$PY" tools_soak.py "$@"
 fi
 
 if [ "${1:-}" = "--test" ]; then

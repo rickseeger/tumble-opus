@@ -38,6 +38,7 @@ deliberately the fastest direction: the course is meant to be driven down.
 ./run.sh --headless              # boot the sim with no window, print state, exit
 ./run.sh --headless --demolish   # same, but blow up each structure on approach
 ./run.sh --test                  # run the test suite
+./run.sh --soak                  # sustained-demolition soak (see below)
 ```
 
 `--headless` is the useful one on a server with no display: it builds the
@@ -74,6 +75,7 @@ game/render_debris.py the 1A glowing-wireframe treatment (render layer only)
 game/app.py        ShowBase host: visuals, lights, camera, input binding
 tools_fracture_report.py  headless per-archetype fracture summary table
 tools_debris_demo.py      headless shatter demo + stepping benchmark
+tools_soak.py             headless sustained-demolition soak: load + leak harness
 tests/             pytest suite, runs with no display
 ```
 
@@ -370,6 +372,109 @@ Watch it happen, phase by phase, with no display:
 ```
 
 
+### Sustained-demolition soak
+
+The performance table above is one collapse at a time. The soak is the other
+question: does the budget stay honest over a *long* run, and does anything
+leak? `tools_soak.py` answers it by driving the real game through many
+consecutive demolitions and asserting hard bounds on what it measures.
+
+```
+.venv/bin/python tools_soak.py --ci                            # ~8 s, lives in the test suite
+.venv/bin/python tools_soak.py                                 # 40 structures
+.venv/bin/python tools_soak.py --structures 60 --settle-seconds 20
+./run.sh --test tests/test_soak.py                             # the same bounds, as pytest
+```
+
+It is headless, fixed-timestep and fixed-frame-count: no sleeping, no wall
+clock, no window, so its runtime is bounded by construction.
+
+**What it drives is the shipping game, not a stand-in.** `TumbleApp` in
+`window-type none`, the same `step_frame()` the windowed playtest runs; and
+destruction happens the only way it happens in play — `app.strike()` →
+`DamageSystem` accumulates damage → an integrity threshold is crossed →
+`app.demolish()` → `DebrisField.demolish()`. Real Bullet, real convex-hull
+debris, at the shipping 1/120 s step. The only instrumentation is a timing
+wrapper that calls straight through to `PhysicsWorld.step_fixed`. Structures
+are authored down the course at runtime through the same
+`generate`/`attach_proxies`/`register` path the course build uses, because the
+five placed structures cannot overflow a 260-body cap several times over.
+
+Measured, 60 structures, 8492 debris bodies spawned (**32.7x the cap**):
+
+| quantity | result | bound |
+|---|---|---|
+| peak live debris | 260 | ≤ 260 cap, **0 breaches** in 718k samples |
+| active bodies, peak → final | 260 → 0 | ≤ 4 |
+| return to baseline after the last burst | 7.5 simulated s | ≤ 12 s |
+| frozen rubble left standing | 343 bodies | > 0 (it sleeps, it is not deleted) |
+| physics step, mean / max | 1.79 ms / 7.54 ms | ≤ **8.333 ms** mean, ≤ 50 ms max |
+| step time early → late | 2.08 → 1.24 ms (0.60x) | ≤ 1.6x (mean), ≤ 2.0x (p95) |
+| real-time headroom | 4.66x | — |
+| RSS, start → settled | 92.2 → 102.8 MB (+10.6) | ≤ +25 MB |
+| RSS growth rate, early → late | +0.31 → +0.06 MB/cycle (0.19x) | ≤ 0.6x |
+| per-cycle live debris trend | 1.00x | ≤ 1.15x |
+| non-finite positions / escapees | 0 / 0 | 0 |
+
+The 8.333 ms step budget is derived, not chosen: the step is 1/120 s and the
+game targets 60 fps, so a rendered frame is two steps and a step's share of a
+16.667 ms frame is half of it.
+
+The bound that matters most for a leak is the **plateau ratio**, not the
+absolute MB figure. A real leak is linear in the number of structures, so its
+late per-cycle growth rate equals its early rate and the ratio sits at ~1.0; a
+bounded system's late rate collapses toward zero. That makes the check
+independent of how long you run it — and 12 structures settling at +10.2 MB
+against 60 structures at +10.6 MB is the same fact stated the other way.
+
+#### Four real leaks the soak found
+
+None of them are reachable in a five-structure play session, and all four were
+fixed rather than tolerated:
+
+| leak | measured cost | fix |
+|---|---|---|
+| Panda interns every `TransformState` Bullet writes; `garbage_collect()` normally runs once per *rendered* frame, and headless there is no rendered frame | +266 MB over 14 structures, still climbing linearly | `physics.reclaim_interned_states()`, per step |
+| `ShatterEvent` history is unbounded, and an event holds its bodies — so despawning a body freed nothing | +20 MB/cycle | `config.DEBRIS_EVENT_HISTORY` |
+| `DamageReport` history, same shape: a report holds the events, which hold the bodies | linear in cycles | `config.DAMAGE_REPORT_HISTORY` |
+| a despawned body kept its `BulletRigidBodyNode`, convex hull shape and fracture `Chunk` alive, because the (now bounded) history still referenced it | +1.08 MB/structure, **plateau ratio 0.99 — no convergence** | `DebrisBody.release()`, from `_despawn` |
+
+The last one is the instructive one. The budget was never wrong about what it
+was simulating — live bodies sat flat at the cap the whole time — but 6528 of
+6864 `DebrisBody` objects alive were in state `DESPAWNED`, every one reachable
+from the retained history. So `release()` drops the Bullet handles and the
+chunk descriptor; the history keeps what history is for (name, structure,
+mass, volume, chunk index — all cached as plain numbers at construction) and
+owns none of the simulation. Querying the pose of a released body raises
+`ReferenceError` with an explanation rather than touching freed memory.
+
+A fifth finding was behavioural rather than a leak: the settle rule used to
+accept "Bullet deactivated it" as proof that something was holding a chunk up.
+But `BulletCharacterControllerNode` is kinematic and therefore *always*
+active, so it keeps every contact island it touches awake — rubble the player
+stood in never retired. Measured: 119 of 371 bodies stayed live and active
+indefinitely, all at rest, none grounded. `DebrisField.is_supported()` now
+also accepts sustained quiet as proof of support, which needs no Bullet query
+at all. (A contact-manifold sweep was tried first and rejected: correct, but
+`BulletWorld.getManifold()` leaks ~16 MB per 1000 steps in these bindings,
+which trades a solver leak for a memory leak.)
+
+#### Would the bounds catch a regression?
+
+`tests/test_soak.py::test_the_bounds_would_fail_if_the_budget_were_broken`
+answers that rather than asserting it. It takes the healthy measurement and
+mutates each field the way the corresponding bug would move it — debris
+unbounded, debris never slept, debris slept only after an unreasonable wait,
+per-step work growing, the frame budget blown, memory leaking linearly, body
+count climbing across cycles, positions gone non-finite, bodies surviving
+teardown, a vacuous run that never pressured the budget — and requires
+`SoakResult.failures()` to name the right bound in each case. Nothing is
+weakened to make anything pass.
+
+`SoakResult.failures()` is also the *only* verdict in the codebase: the CLI's
+exit code and the pytest assertions both read it, so they cannot disagree
+about what "sustainable" means.
+
 ## Damage and the destruction trigger
 
 `game/damage.py` is the decision layer. Before it, the game had two halves
@@ -469,6 +574,19 @@ in well under a second:
 
 ```
 ./run.sh --test tests/test_debris_budget.py
+```
+
+`tests/test_soak.py` is the sustained-demolition soak described under
+**Sustained-demolition soak** above: 12 structures demolished back to back
+through the real game loop, 1998 debris bodies (7.7x the cap), with hard
+bounds on the cap, the return to baseline, the per-step time budget, memory
+plateauing, and debris positions staying finite and in-world — plus a mutation
+test proving those bounds would actually fail if debris were unbounded, never
+slept, or leaking. ~8 s:
+
+```
+./run.sh --test tests/test_soak.py
+./run.sh --soak                     # the same run as a reporting command
 ```
 
 ### Not verified automatically
