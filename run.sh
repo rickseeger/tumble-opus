@@ -6,6 +6,7 @@
 #   ./run.sh --headless   no-window smoke run (servers, CI)
 #   ./run.sh --test       run the pytest suite headlessly
 #   ./run.sh --soak       sustained-demolition soak (load + leak harness)
+#   ./run.sh --soak-driver  headless instrumentation driver (per-frame metrics, no asserts)
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -32,6 +33,13 @@ if [ ! -f "$STAMP" ]; then
   "$PY" -m pip install --quiet --upgrade pip
   "$PY" -m pip install --quiet -r requirements.txt
   touch "$STAMP"
+fi
+
+if [ "${1:-}" = "--soak-driver" ]; then
+  shift
+  # Instrumentation only: drives the real headless game and writes per-frame
+  # metrics. Asserts nothing. See README "The soak driver".
+  exec "$PY" tools/soak_driver.py "$@"
 fi
 
 if [ "${1:-}" = "--soak" ]; then

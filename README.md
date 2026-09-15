@@ -39,6 +39,7 @@ deliberately the fastest direction: the course is meant to be driven down.
 ./run.sh --headless --demolish   # same, but blow up each structure on approach
 ./run.sh --test                  # run the test suite
 ./run.sh --soak                  # sustained-demolition soak (see below)
+./run.sh --soak-driver           # instrumentation-only soak driver (see below)
 ```
 
 `--headless` is the useful one on a server with no display: it builds the
@@ -76,6 +77,7 @@ game/app.py        ShowBase host: visuals, lights, camera, input binding
 tools_fracture_report.py  headless per-archetype fracture summary table
 tools_debris_demo.py      headless shatter demo + stepping benchmark
 tools_soak.py             headless sustained-demolition soak: load + leak harness
+tools/soak_driver.py      headless soak DRIVER: per-frame instrumentation, no assertions
 tests/             pytest suite, runs with no display
 ```
 
@@ -474,6 +476,68 @@ weakened to make anything pass.
 `SoakResult.failures()` is also the *only* verdict in the codebase: the CLI's
 exit code and the pytest assertions both read it, so they cannot disagree
 about what "sustainable" means.
+
+### The soak driver (instrumentation only)
+
+`tools_soak.py` above is a *judge*: it measures and then asserts bounds.
+`tools/soak_driver.py` is the **instrument** — it drives the same real game
+headlessly and writes one row of raw numbers per frame, and it asserts
+nothing. Use it when you want data to look at (or to feed an analysis pass)
+rather than a pass/fail verdict.
+
+```
+./run.sh --soak-driver                                   # default: 1200 frames (~7 s wall)
+.venv/bin/python tools/soak_driver.py --frames 3600 --destroy-every 120
+.venv/bin/python tools/soak_driver.py --seconds 60 --seed 7 --out run.csv
+.venv/bin/python tools/soak_driver.py --format jsonl --out run.jsonl
+.venv/bin/python tools/soak_driver.py --help             # every flag
+```
+
+**Flags.** Run length is `--frames N` (host frames of 1/60 s) or
+`--seconds S` (simulated seconds, which overrides `--frames`). The
+destruction schedule is `--destroy-every N`: every N frames the driver
+authors one more structure onto the course, stands the player 14 m short of
+it, and strikes it until damage brings it down — `--destroy-every 0` disables
+destruction entirely, which is the quiet baseline. `--structures N` caps how
+many are ever authored. `--seed` seeds both structure generation and the
+debris field's RNG (verified: two runs at the same seed produce byte-identical
+count columns). Output is `--out PATH` with `--format csv|jsonl` (`--out -`
+skips the file), plus optional `--summary-json PATH`; `--progress-every N`
+controls the live progress lines.
+
+**What it drives is the shipping path**, same as the soak: `TumbleApp(headless
+=True)` (`window-type none`, no graphics pipe, no audio — it runs over SSH),
+`app.step_frame()` for the real frame, and `app.strike()` → `DamageSystem` →
+integrity threshold → `app.demolish()` → `DebrisField.shatter()` for
+destruction. The driver never calls `demolish()` itself; every collapse is the
+consequence of accumulated damage. Structures are placed through
+`structures.generate` / `attach_proxies` / `DamageSystem.register`.
+
+**Per-frame columns.** `frame`, `ts_unix`, `elapsed_s`, `sim_time_s`,
+`frame_ms`, `physics_ms`, `substeps`, `live`, `active`, `stepped`, `frozen`,
+`total_spawned`, `total_frozen`, `total_despawned`, `total_evicted`,
+`retired_total` (frozen + despawned), `rss_mb`, `structures_placed`,
+`structures_destroyed`, `struck_this_frame`, `spawned_this_event`,
+`skipped_for_budget`. stdout adds a compact summary: frame time
+mean/p50/p95/max, live/frozen peaks against the cap, totals spawned and
+retired, interned pose states reclaimed, and RSS start → peak → end.
+
+**No game code was changed to make this work, and no accessor was added.**
+Every count it records was already public: `DebrisField.live_count`,
+`.active_count()`, `.stepped_count()`, `.frozen_count`, `.total_spawned`,
+`.total_frozen`, `.total_despawned`, `.total_evicted`, `.snapshot()`, and
+`PhysicsWorld.step_count` / `.sim_time` / `.states_reclaimed`. The single
+instrumentation seam is a timing wrapper around `PhysicsWorld.step_fixed`
+that calls straight through to the real method — two `perf_counter` reads per
+substep, no behaviour touched.
+
+Measured here, 1800 frames (30 s simulated) in 9.8 s wall, destroying every
+120 frames: 15 structures placed and 15 destroyed, 2409 bodies spawned, 2922
+retired (885 frozen + 2037 despawned, 1299 of them evicted for budget), live
+peaking at exactly the cap of 260 and never above it, frame time mean 4.91 ms
+/ p95 6.66 ms / max 16.56 ms, RSS 100.3 → 123.0 MB. Those are observations,
+not bounds — the driver does not judge them, and tuning is somebody else's
+node.
 
 ## Damage and the destruction trigger
 
